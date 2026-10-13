@@ -1,4 +1,6 @@
+import type {ApplicantRecords} from './ProfileRecords';
 export interface Profile {
+  records:ApplicantRecords;
   first_name:string; last_name:string; email:string; phone:string; location:string; country:string;
   linkedin_url:string; portfolio_url:string; summary:string; skills:string[]; skill_years:Record<string,number>;
   work_history:string; education:string; availability:string; salary_expectation:string;

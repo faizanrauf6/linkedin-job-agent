@@ -2,6 +2,7 @@ import {useState} from 'react';
 import {ArrowLeft,Plus,Search as SearchIcon,Trash2,Globe,KeyRound} from 'lucide-react';
 import {api,json} from './api';
 import {AdvancedSettings} from './Advanced';
+import {ProfileRecords} from './ProfileRecords';
 import {Callout,Empty,Field,ListInput,mapText,Panel,parseMap,SaveButton,Toggle} from './components';
 import {newSearch,type Config,type Profile,type Run,type Search,type Settings} from './types';
 
@@ -32,7 +33,7 @@ export function ProfileEditor({config,save,run}:Props){
    <Field label="Willing to relocate"><select value={profile.willing_to_relocate===null?'unknown':String(profile.willing_to_relocate)} onChange={e=>patch('willing_to_relocate',e.target.value==='unknown'?null:e.target.value==='true')}><option value="unknown">Not specified</option><option value="true">Yes</option><option value="false">No</option></select></Field><Field label="Relocation countries" help="Countries you explicitly accept. Residency requirements still apply."><ListInput value={profile.relocation_countries} onChange={v=>patch('relocation_countries',v)}/></Field><Field label="Voluntary demographic questions"><select value={profile.demographic_preference} onChange={e=>patch('demographic_preference',e.target.value)}><option value="skip">Leave optional questions blank</option><option value="decline">Prefer decline-to-answer when available</option></select></Field>
    <Field label="Saved screening answers" help="Exact question = Your answer. One per line; country-specific questions should include the country." wide><textarea rows={5} value={answers} onChange={e=>setAnswers(e.target.value)} placeholder="Are you willing to relocate? = Yes"/></Field>
   </div>
- </Panel><div className="form-footer"><span>Your information stays on this computer unless you enable a cloud model or submit an application.</span><SaveButton/></div>
+ </Panel><ProfileRecords value={profile.records} onChange={records=>patch('records',records)}/><div className="form-footer"><span>Your information stays on this computer unless you enable a cloud model or submit an application.</span><SaveButton/></div>
  </form>;
 }
 

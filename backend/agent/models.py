@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from .profile_records import ApplicantRecords
 
 
 def uid() -> str:
@@ -20,6 +21,7 @@ class Model(BaseModel):
 
 
 class Profile(Model):
+    records: ApplicantRecords = Field(default_factory=ApplicantRecords)
     first_name: str = ""
     last_name: str = ""
     email: str = ""

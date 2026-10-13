@@ -46,6 +46,10 @@ def resolve_answer(question: str, profile: Profile, resume: Resume | None = None
     education = education_answer(key, profile)
     if education is not None:
         return education
+    from .profile_records import structured_answer
+    structured = structured_answer(question, profile)
+    if structured is not None:
+        return structured
     fields = {
         "first name": profile.first_name, "given name": profile.first_name,
         "last name": profile.last_name, "family name": profile.last_name,
