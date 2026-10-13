@@ -18,7 +18,16 @@ async def section_groups(scope, section):
         group=groups.nth(i)
         if await group.is_visible() and (await group.evaluate(GROUP_INFO))['section']==section:
             result.append(group)
-    return result
+    leaves=[]
+    for group in result:
+        contains_record=False
+        for other in result:
+            handle=await other.element_handle()
+            if await group.evaluate('(parent,child)=>parent!==child && parent.contains(child)',handle):
+                contains_record=True
+                break
+        if not contains_record:leaves.append(group)
+    return leaves
 
 
 async def record_context(scope, element, profile):

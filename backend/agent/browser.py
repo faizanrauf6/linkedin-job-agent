@@ -610,11 +610,16 @@ class BrowserAgent:
                     outcome = await fill_form(scope, profile, resume, job.country, lambda question: narrative_answer(question, job, profile, resume, config.settings), can_act,
                         approved_prefilled=self.pending_application.approved, attachment_verified=uploaded,
                         confirmed_fields=self.pending_application.confirmed.get(signature, {}),
-                        documents=self._documents())
+                        documents=self._documents(),saved_attachment_verified=any(p['kind']=='saved' for p in self.pending_application.attachments))
                     answers.update(outcome.answers)
                     sources.update(outcome.sources)
                     for proof in outcome.document_uploads:
-                        self.pending_application.additional_uploads=[p for p in self.pending_application.additional_uploads if p['label']!=proof['label']]+[proof]
+                        retained=[]
+                        for previous in self.pending_application.additional_uploads:
+                            same_control=previous.get('identity')==proof['identity']
+                            replaced=previous['label']==proof['label'] and not previous.get('transferred') and not await previous['element'].evaluate('el=>el.isConnected')
+                            if not same_control and not replaced:retained.append(previous)
+                        self.pending_application.additional_uploads=retained+[proof]
                     for proof in self.pending_application.additional_uploads:
                         connected=await proof['element'].evaluate('el=>el.isConnected')
                         if not (connected or proof.get('transferred')) or not await upload_matches(proof['element'],proof['document']):
@@ -646,14 +651,17 @@ class BrowserAgent:
                         prior_confirmations = await self.confirmations(frame)
                         if not await attachments_valid(self.pending_application.attachments, resume, scope, self._download_resume):
                             return ApplyResult(state='needs_input', reason='The selected CV attachment changed. Review the document before continuing.', answers=answers, sources=sources)
+                        if not all([await upload_matches(proof['element'],proof['document']) for proof in self.pending_application.additional_uploads]):
+                            return ApplyResult(state='needs_input',reason='A supporting document changed before submission.',answers=answers,sources=sources,document_ids=job.document_ids)
                         if not can_act() or not before_submit():
                             return ApplyResult(state="needs_input", reason="Submission cancelled: paused, changed settings, operating hours, or daily limit", answers=answers, sources=sources)
                         submission_started = True
                         await submit.click()
                         for _ in range(15):
                             if await self.has_new_confirmation(prior_confirmations, frame):
+                                observed=await self.confirmations(frame)-prior_confirmations
                                 return ApplyResult(state="submitted", reason="Visible application confirmation received", document_ids=job.document_ids, answers=answers, sources=sources,
-                                    receipt={'text':'Visible application confirmation received','url':frame.url,'observed_at':now()})
+                                    receipt={'text':'; '.join(sorted(observed))[:1000] or 'Visible application confirmation received','url':frame.url,'observed_at':now()})
                             await self.page.wait_for_timeout(700)
                         return ApplyResult(state="submission_uncertain", reason="Submit was attempted but confirmation was not observed. Reconcile before retry.", answers=answers, sources=sources)
                     next_button = scope.get_by_role("button", name=getattr(adapter, 'next_labels', re.compile(r"^(?:Next|Continue|Review|Review your application)$", re.I))).first

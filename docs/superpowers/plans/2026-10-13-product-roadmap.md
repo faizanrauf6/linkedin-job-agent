@@ -14,7 +14,7 @@ bounded application worker; expose working dashboard controls and capability evi
 - [x] P1 profile: Integrate structured applicant records, validation, answer resolution and accessible profile editors.
 - [x] P1 decisions: Persist and approve immutable payload snapshots; reject stale or changed submission payloads.
 - [x] P2 matching: Add explicit requirement interpretation and explainable weighted ranking with occupation-neutral fixtures.
-- [ ] P2 documents: Add grounded reviewed drafts, bounded narrative composition and optional CV tailoring.
+- [x] P2 documents: Add grounded reviewed drafts, bounded narrative composition and optional CV tailoring.
 - [ ] P2 tracking: Add durable attempts/receipts, pipeline edits, exports and authorized read-only email evidence.
 - [ ] P2 maintenance: Integrate CI/pinned setup, sanitized diagnostics, adapter health and validated backup/restore controls.
 - [ ] Run full tests/build/smoke, review combined changes, resolve findings, publish and record exact results/limits.

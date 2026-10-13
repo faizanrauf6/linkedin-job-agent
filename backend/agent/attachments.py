@@ -2,7 +2,7 @@
 import hashlib
 import re
 
-from .forms import FIELD_INFO
+from .forms import FIELD_INFO,is_resume_field
 
 SAVED_RESUME_CARDS = {
     'linkedin': '.jobs-document-upload-redesign-card,.jobs-document-upload__container,[data-resume-id]',
@@ -32,7 +32,7 @@ async def resume_inputs(scope):
     for index in range(await fields.count()):
         element = fields.nth(index)
         info = await element.evaluate(FIELD_INFO)
-        if not re.search(r'resume|curriculum|\bcv\b', info['label'], re.I) or re.search(r'passport|identity|cover|photo|certificate', info['label'], re.I):
+        if not is_resume_field(info['label']):
             continue
         handle = await element.element_handle()
         if handle is not None:
@@ -49,8 +49,10 @@ async def attachments_valid(proofs, resume, scope, download):
     # A retained FileList can survive a detached upload control. Current CV
     # widgets take precedence; removed controls only prove a later review step.
     inputs = await resume_inputs(scope)
-    matching_upload = any([await upload_matches(handle, resume) for handle in inputs])
-    changed_upload = any([await handle.evaluate('el => !!el.files?.length') for handle in inputs]) and not matching_upload
+    matches=[await upload_matches(handle,resume) for handle in inputs]
+    matching_upload=bool(inputs) and all(matches)
+    present=[await handle.evaluate('el=>!!el.files?.length') for handle in inputs]
+    changed_upload=any(has_file and not matches[i] for i,has_file in enumerate(present))
     saved_widgets = await scope.locator(','.join(SAVED_RESUME_CARDS.values())).count()
     for proof in proofs:
         if proof['kind'] == 'upload':

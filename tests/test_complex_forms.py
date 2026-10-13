@@ -71,3 +71,30 @@ async def test_confirmed_additional_document_is_uploaded_separately_from_cv(brow
     assert result.state=='submitted'
     assert await agent.page.evaluate('window.docs')==['selected.pdf','license.txt']
     assert job.document_ids==[document.id]
+
+
+@pytest.mark.asyncio
+async def test_nested_section_wrapper_does_not_merge_employment_records(browser_agent):
+    page=browser_agent.page
+    await page.set_content('<form><fieldset><legend>Employment history</legend><fieldset><legend>Employment 1</legend><label>Employer<input required></label></fieldset><fieldset><legend>Employment 2</legend><label>Employer<input required></label></fieldset></fieldset></form>')
+    profile=Profile(records=ApplicantRecords(employment=[{'organization':'Clinic A'},{'organization':'Clinic B'}]))
+    result=await fill_form(page.locator('form'),profile,Resume(label='CV'))
+    assert not result.missing
+    assert await page.locator('input').evaluate_all('els=>els.map(el=>el.value)')==['Clinic A','Clinic B']
+
+
+@pytest.mark.asyncio
+async def test_conditional_question_inserted_before_trigger_is_inspected(browser_agent):
+    page=browser_agent.page
+    await page.set_content('''<form><label id=trigger>Have a license?<select required onchange="if(!document.querySelector('#jurisdiction'))this.parentElement.insertAdjacentHTML('beforebegin','<label id=jurisdiction>License jurisdiction<input required></label>')"><option value=""></option><option>Yes</option><option>No</option></select></label></form>''')
+    result=await fill_form(page.locator('form'),Profile(saved_answers={'Have a license?':'Yes'}),Resume(label='CV'))
+    assert 'License jurisdiction' in result.missing
+
+
+@pytest.mark.asyncio
+async def test_multiselect_preserves_a_whole_option_containing_a_comma(browser_agent):
+    page=browser_agent.page
+    await page.set_content('<form><label>Preferred city<select multiple required><option>Washington, DC</option><option>New York</option></select></label></form>')
+    result=await fill_form(page.locator('form'),Profile(saved_answers={'Preferred city':'Washington, DC'}),Resume(label='CV'))
+    assert not result.missing
+    assert await page.locator('select').evaluate('el=>el.selectedOptions[0].textContent')=='Washington, DC'

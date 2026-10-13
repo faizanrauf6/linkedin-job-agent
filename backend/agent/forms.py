@@ -62,12 +62,18 @@ FIELD_INFO = """el => {
  return {label, type:el.type || el.getAttribute('role') || el.tagName.toLowerCase(), role:el.getAttribute('role'), name:el.name || fieldset?.id || legend || '', context:record?.getAttribute('data-section') || record?.querySelector(':scope > legend')?.textContent || '',
  required:el.required || el.getAttribute('aria-required') === 'true' || /\\*/.test(direct || legend || ''),
  options:el.tagName === 'SELECT' ? [...el.options].map(o => o.textContent.trim()) : el.getAttribute('role') === 'listbox' ? [...el.querySelectorAll('[role=option]')].map(o=>o.textContent.trim()) : [],
- disabled:el.disabled || el.getAttribute('aria-disabled') === 'true', autocomplete:el.autocomplete};
+ disabled:el.disabled || el.getAttribute('aria-disabled') === 'true', autocomplete:el.autocomplete,
+ max_length:Number.isInteger(el.maxLength) && el.maxLength >= 0 ? el.maxLength : null,
+ max_words:(label.match(/(?:max(?:imum)?(?: of)?\\s*(\\d+)\\s*words?|(\\d+)\\s*words?\\s*max(?:imum)?)/i)||[]).slice(1).find(Boolean)||null};
 }"""
 
 
 FIELDS = 'input:not([type=hidden]):not([type=submit]):not([type=button]),select,textarea,[role="combobox"]:not(input):not(select),[role="radio"]:not(input),[role="checkbox"]:not(input),[role="listbox"][aria-multiselectable=true]'
 PERSONAL_ACTION = re.compile(r'\bsignature\b|\bsign here\b|\bi (?:certify|attest|declare|agree)\b|\bassessment\b|\bcoding test\b', re.I)
+
+
+def is_resume_field(label):
+    return bool(re.search(r'resume|curriculum|\bcv\b',label,re.I) and not re.search(r'passport|national id|identity|cover|photo|certificat|licen[cs]e|\bnot\s+(?:a\s+)?(?:cv|resume)\b',label,re.I))
 
 
 async def field_key(element, info):
@@ -160,7 +166,7 @@ async def existing_value(element, info, scope):
         return ''
     if kind == 'checkbox':
         return 'Yes' if await element.evaluate("el => el.checked || el.getAttribute('aria-checked') === 'true'") else 'No'
-    return await element.evaluate("el => el.tagName === 'SELECT' ? [...el.selectedOptions].filter(o=>o.value).map(o=>o.textContent.trim()).join(', ') : el.getAttribute('role') === 'listbox' ? [...el.querySelectorAll('[role=option][aria-selected=true]')].map(o=>o.textContent.trim()).join(', ') : (el.value ?? el.textContent ?? '').trim()")
+    return await element.evaluate("el => el.tagName === 'SELECT' ? (el.multiple ? (el.selectedOptions.length ? JSON.stringify([...el.selectedOptions].filter(o=>o.value).map(o=>o.textContent.trim())) : '') : [...el.selectedOptions].filter(o=>o.value).map(o=>o.textContent.trim()).join(', ')) : el.getAttribute('role') === 'listbox' ? (el.querySelectorAll('[role=option][aria-selected=true]').length ? JSON.stringify([...el.querySelectorAll('[role=option][aria-selected=true]')].map(o=>o.textContent.trim())) : '') : (el.value ?? el.textContent ?? '').trim()")
 
 
 async def prefilled_candidates(scope, profile, resume, country):
@@ -187,7 +193,7 @@ async def prefilled_candidates(scope, profile, resume, country):
     return result
 
 
-async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", narrator=None, can_act=lambda: True, *, approved_prefilled=None, attachment_verified=False, confirmed_fields=None, documents=None) -> FormOutcome:
+async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", narrator=None, can_act=lambda: True, *, approved_prefilled=None, attachment_verified=False, confirmed_fields=None, documents=None, saved_attachment_verified=False) -> FormOutcome:
     result = FormOutcome()
     from .complex_forms import ensure_repeating_groups, record_context, contextual_answer
     await ensure_repeating_groups(scope,profile,can_act)
@@ -197,26 +203,37 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
     radio_done = set()
     counts=await semantic_counts(scope)
     field_count=await fields.count()
-    for i in range(200):
-        if i>=await fields.count():break
+    processed=set()
+    for _ in range(200):
+        element=None
+        for i in range(await fields.count()):
+            candidate=fields.nth(i)
+            candidate_info=await candidate.evaluate(FIELD_INFO)
+            identity=await field_key(candidate,candidate_info)
+            if identity not in processed:
+                processed.add(identity)
+                element,info=candidate,candidate_info
+                break
+        if element is None:break
         if field_count!=await fields.count():
             counts=await semantic_counts(scope)
             field_count=await fields.count()
         if not can_act():
             result.missing.append("Agent paused or configuration changed")
             break
-        element = fields.nth(i)
-        info = await element.evaluate(FIELD_INFO)
         label, kind = info["label"], info["type"]
         context=await record_context(scope,element,profile)
         answer_label=f'{context[0].title()} {context[1]+1} · {label}' if context is not None else label
         if info["disabled"] or (kind != "file" and not await element.is_visible()):
             continue
         if kind == "file":
-            if re.search(r"resume|curriculum|\bcv\b", label, re.I) and not re.search(r"passport|national id|identity|cover|photo|certificate", label, re.I):
+            if is_resume_field(label):
                 if attachment_verified:
-                    result.uploaded = True
-                    continue
+                    from .attachments import upload_matches
+                    handle=await element.element_handle()
+                    if await upload_matches(handle,resume) or saved_attachment_verified and not await element.evaluate('el=>!!el.files?.length'):
+                        result.uploaded = True
+                        continue
                 if not resume.path or not Path(resume.path).is_file():
                     result.missing.append("Selected CV file is missing")
                     continue
@@ -237,7 +254,7 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
                     await act(can_act,lambda:element.set_input_files({'name':document.filename,'mimeType':mime,'buffer':path.read_bytes()}))
                     handle=await element.element_handle()
                     if await upload_matches(handle,document):
-                        result.document_uploads.append({'element':handle,'document':document,'label':answer_label})
+                        result.document_uploads.append({'element':handle,'document':document,'label':answer_label,'identity':await field_key(element,info)})
                         result.answers[answer_label]=document.filename
                         result.sources[answer_label]='document:'+document.id+':'+document.sha256
                     else:result.missing.append(label+' (document upload could not be verified)')
@@ -274,12 +291,30 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
                 result.missing.append(label or "Unlabelled required field")
             continue
         value = answer.value
+        limit=info.get('max_length')
+        words=list(re.finditer(r'\S+',value))
+        word_limit=int(info.get('max_words') or 0)
+        if word_limit and len(words)>word_limit:limit=min(limit if limit is not None else len(value),words[word_limit-1].end())
+        if limit is not None and len(value)>limit:
+            if narrative_question(label):
+                from .written_documents import fit_narrative
+                fitted=fit_narrative(answer,limit)
+                if fitted is not None:value=fitted.value
+                else:
+                    result.missing.append(label+' (confirmed evidence does not fit the length limit)')
+                    continue
+            else:
+                result.missing.append(label+' (confirmed answer exceeds the length limit)')
+                continue
         try:
-            if current and current.strip().casefold() == value.strip().casefold() and await element.evaluate('el => el.checkValidity ? el.checkValidity() : true'):
+            if current and kind!='select-multiple' and info['role']!='listbox' and current.strip().casefold() == value.strip().casefold() and await element.evaluate('el => el.checkValidity ? el.checkValidity() : true'):
                 result.answers[answer_label], result.sources[answer_label] = current, answer.source
                 continue
             if kind == 'select-multiple' or info['role'] == 'listbox':
-                values=list(dict.fromkeys(v.strip() for v in value.split(',') if v.strip()))
+                whole=choose_option(value,info['options'])
+                try:typed=json.loads(value)
+                except (ValueError,TypeError):typed=None
+                values=typed if isinstance(typed,list) and all(isinstance(v,str) for v in typed) else [whole] if whole is not None else list(dict.fromkeys(v.strip() for v in value.split(',') if v.strip()))
                 choices=[choose_option(v,info['options']) for v in values]
                 if not choices or None in choices:
                     result.missing.append(label+' (no matching multiselect options)')
@@ -292,7 +327,8 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
                         option=options.nth(n)
                         if (await option.get_attribute('aria-selected')=='true') != (text.strip() in choices):
                             await act(can_act,option.click)
-                if set((await existing_value(element,info,scope)).split(', ')) != set(choices):
+                actual=await element.evaluate("el=>el.tagName==='SELECT'?[...el.selectedOptions].map(o=>o.textContent.trim()):[...el.querySelectorAll('[role=option][aria-selected=true]')].map(o=>o.textContent.trim())")
+                if set(actual) != set(choices):
                     result.missing.append(label+' (multiselect could not be verified)')
                     continue
             elif kind.startswith("select") or info["options"]:
@@ -361,6 +397,9 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
             else:
                 if kind=='month' and re.fullmatch(r'\d{4}-\d{2}-\d{2}',value):value=value[:7]
                 await act(can_act, lambda: element.fill(value))
+                if await existing_value(element,info,scope)!=value.strip():
+                    result.missing.append(label+' (portal changed the supplied answer)')
+                    continue
                 valid = await element.evaluate("el => el.checkValidity ? el.checkValidity() : true")
                 if not valid:
                     result.missing.append(label + " (answer does not satisfy field validation)")
@@ -372,6 +411,13 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
             break
         except Exception:
             result.missing.append(label + " (unsupported field interaction)")
+    for i in range(await fields.count()):
+        element=fields.nth(i)
+        info=await element.evaluate(FIELD_INFO)
+        if info['required'] and not info['disabled'] and await element.is_visible() and info['type']!='file':
+            if not await element.evaluate('el=>el.checkValidity ? el.checkValidity() : true'):
+                result.missing.append(info['label'] or 'Unlabelled required field')
+    if await fields.count()>200:result.missing.append('Field inspection limit reached; review remaining fields manually')
     result.missing = list(dict.fromkeys(result.missing))
     result.field_details = await missing_details(scope, result.missing)
     return result

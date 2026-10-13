@@ -373,9 +373,16 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
         fields = {f['key']:f for f in saved.get('field_details',[])}
         for key,value in body.answers.items():
             detail = fields.get(key)
+            choices_valid=True
+            if detail and detail.get('options'):
+                if detail['type'] in {'select-multiple','listbox'}:
+                    try:selected=json.loads(value)
+                    except ValueError:selected=[value]
+                    choices_valid=isinstance(selected,list) and bool(selected) and all(isinstance(v,str) and v in detail['options'] for v in selected)
+                else:choices_valid=value in detail['options']
             if (not detail or detail.get('personal_action') or detail.get('ambiguous') or detail['type'] in {'file','password'}
                     or not value.strip() or len(value) > min(detail.get('max_length') or 10000,10000)
-                    or detail.get('options') and value not in detail['options']):
+                    or not choices_valid):
                 raise HTTPException(409, 'An answer does not match the recorded question or available options')
         updated.setdefault('confirmed',{}).setdefault(saved['step_signature'],{}).update(body.answers)
         async with worker.run_lock:
@@ -513,6 +520,8 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
     register_document_routes(app,store,worker,runtime)
     from .approval_api import register_approval_api
     browser.review_payload=register_approval_api(app,store,worker,runtime).payload_matches
+    from .written_document_api import register_written_document_routes
+    register_written_document_routes(app,store,worker,runtime)
     if frontend.exists():
         app.mount("/", StaticFiles(directory=frontend, html=True), name="dashboard")
     return app
