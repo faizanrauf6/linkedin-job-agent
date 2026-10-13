@@ -15,6 +15,7 @@ class FormOutcome:
     answers: dict[str, str] = field(default_factory=dict)
     sources: dict[str, str] = field(default_factory=dict)
     uploaded: bool = False
+    field_details: list[dict] = field(default_factory=list)
 
 
 class OperationPaused(Exception):
@@ -78,6 +79,10 @@ async def field_key(element, info):
       }
       return root.__orbitToken + ':' + el.__orbitToken;
     }''', uuid4().hex)
+    return identity + ':' + await field_semantics(element, info)
+
+
+async def field_semantics(element, info):
     choices = await element.evaluate('''el => {
       const group = el.closest('fieldset,[role=radiogroup]');
       return group && (el.type === 'radio' || el.getAttribute('role') === 'radio')
@@ -85,7 +90,42 @@ async def field_key(element, info):
             value:r.value, label:r.getAttribute('aria-label') || [...(r.labels||[])].map(l=>l.innerText).join(' ') || r.innerText})) : [];
     }''')
     semantics = hashlib.sha256(json.dumps([info, choices], sort_keys=True).encode()).hexdigest()
-    return identity + ':' + semantics
+    return semantics
+
+
+async def form_signature(scope):
+    values = []
+    fields = scope.locator(FIELDS)
+    for index in range(await fields.count()):
+        element = fields.nth(index)
+        info = await element.evaluate(FIELD_INFO)
+        if info['type'] == 'file' or await element.is_visible():
+            values.append(await field_semantics(element, info))
+    return hashlib.sha256(json.dumps(values).encode()).hexdigest()
+
+
+async def missing_details(scope, questions):
+    result, seen = [], set()
+    fields = scope.locator(FIELDS)
+    for index in range(await fields.count()):
+        element = fields.nth(index)
+        info = await element.evaluate(FIELD_INFO)
+        if info['disabled'] or not await element.is_visible() or not any(q.startswith(info['label']) for q in questions):
+            continue
+        key = await field_semantics(element, info)
+        if key in seen:
+            continue
+        seen.add(key)
+        options = await element.evaluate('''el => {
+          if(el.tagName === 'SELECT') return [...el.options].filter(o=>o.value && !o.disabled).map(o=>o.textContent.trim());
+          const group=el.closest('fieldset,[role=radiogroup]');
+          return group ? [...group.querySelectorAll('input[type=radio],[role=radio]')].map(r=>r.getAttribute('aria-label') || [...(r.labels||[])].map(l=>l.innerText).join(' ') || r.innerText) : [];
+        }''')
+        constraints = await element.evaluate("el => ({min:el.getAttribute('min'),max:el.getAttribute('max'),pattern:el.getAttribute('pattern'),max_length:el.maxLength > 0 ? el.maxLength : null})")
+        result.append({'key':key, 'label':info['label'], 'type':info['type'], 'required':info['required'],
+            'options':options, 'value':await existing_value(element, info, scope) if info['type'] not in {'password','file'} else '',
+            'reason':next(q for q in questions if q.startswith(info['label'])), 'personal_action':bool(PERSONAL_ACTION.search(question_key(info['label']))), **constraints})
+    return result
 
 
 async def existing_value(element, info, scope):
@@ -120,12 +160,12 @@ async def prefilled_candidates(scope, profile, resume, country):
             continue
         key = await field_key(element, info)
         if key not in seen:
-            result.append({'key': key, 'label': info['label'], 'value': value})
+            result.append({'key': key, 'semantic_key': await field_semantics(element, info), 'label': info['label'], 'value': value})
             seen.add(key)
     return result
 
 
-async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", narrator=None, can_act=lambda: True, *, approved_prefilled=None, attachment_verified=False) -> FormOutcome:
+async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", narrator=None, can_act=lambda: True, *, approved_prefilled=None, attachment_verified=False, confirmed_fields=None) -> FormOutcome:
     result = FormOutcome()
     fields = scope.locator(FIELDS)
     # This root stays in the field's document, including when inside an iframe.
@@ -164,6 +204,9 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
         answer = resolve_answer(label, profile, resume, country)
         current = await existing_value(element, info, scope)
         key = await field_key(element, info)
+        confirmed = (confirmed_fields or {}).get(await field_semantics(element, info))
+        if answer is None and confirmed and not PERSONAL_ACTION.search(question_key(label)) and (not current or current == confirmed):
+            answer = Answer(value=confirmed, source='user_confirmed_current_field')
         if answer is None and not PERSONAL_ACTION.search(question_key(label)) and current and (approved_prefilled or {}).get(key) == current:
             answer = Answer(value=current, source='user_confirmed_current_field')
         if answer is None and profile.demographic_preference == "decline" and demographic_question(label):
@@ -266,4 +309,5 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
         except Exception:
             result.missing.append(label + " (unsupported field interaction)")
     result.missing = list(dict.fromkeys(result.missing))
+    result.field_details = await missing_details(scope, result.missing)
     return result

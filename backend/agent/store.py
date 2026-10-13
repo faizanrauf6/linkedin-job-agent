@@ -54,6 +54,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS application_holds (
                     job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+                    data TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status);
             """)
             db.execute("INSERT OR IGNORE INTO config VALUES (1, ?)", (Config().model_dump_json(),))
@@ -161,6 +165,26 @@ class Store:
     def application_held(self, id: str) -> bool:
         with self.connection() as db:
             return db.execute('SELECT 1 FROM application_holds WHERE job_id=?', (id,)).fetchone() is not None
+
+    def checkpoint(self, id: str) -> dict | None:
+        with self.connection() as db:
+            row = db.execute('SELECT data FROM checkpoints WHERE job_id=?', (id,)).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def save_checkpoint(self, id: str, data: dict):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT data FROM jobs WHERE id=?', (id,)).fetchone()
+            if not row:
+                return
+            job = Job.model_validate_json(row[0])
+            if job.submission_started or job.status in {'submitted', 'submission_uncertain'} or db.execute('SELECT 1 FROM manual_skips WHERE job_id=?', (id,)).fetchone():
+                return
+            db.execute('INSERT INTO checkpoints VALUES (?,?) ON CONFLICT(job_id) DO UPDATE SET data=excluded.data', (id, json.dumps(data)))
+
+    def clear_checkpoint(self, id: str):
+        with self.connection() as db:
+            db.execute('DELETE FROM checkpoints WHERE job_id=?', (id,))
 
     @staticmethod
     def _resume_generation(db) -> int:
@@ -320,6 +344,7 @@ class Store:
             if not resume.path or not Path(resume.path).is_file() or hashlib.sha256(Path(resume.path).read_bytes()).hexdigest() != job.resume_hash:
                 return False
             job.submission_started = True
+            db.execute('DELETE FROM checkpoints WHERE job_id=?', (id,))
             job.submission_at = now()
             db.execute("UPDATE jobs SET data=? WHERE id=?", (job.model_dump_json(), id))
             return True
@@ -329,7 +354,7 @@ class Store:
         return bool(job and job.status == "applying" and not config.settings.paused and config.revision == revision and within_hours(config.settings) and not job.submission_started)
 
     def job_action(self, id: str, action: str, confirmation: bool = False, *, expected: Job | None = None,
-                   revision: int | None = None, resume_generation: int | None = None) -> Job:
+                   revision: int | None = None, resume_generation: int | None = None, checkpoint_update: tuple[dict,dict] | None = None) -> Job:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT data FROM jobs WHERE id=?", (id,)).fetchone()
@@ -341,6 +366,10 @@ class Store:
                     or revision is not None and config.revision != revision
                     or resume_generation is not None and self._resume_generation(db) != resume_generation):
                 raise ValueError('The application, settings or CV changed. Review the current state before continuing.')
+            if checkpoint_update is not None:
+                row = db.execute('SELECT data FROM checkpoints WHERE job_id=?', (id,)).fetchone()
+                if row is None or json.loads(row[0]) != checkpoint_update[0]:
+                    raise ValueError('The application checkpoint changed. Review it again.')
             if job.status == "applying":
                 raise ValueError("This application is currently in progress")
             if action == "queue":
@@ -371,10 +400,13 @@ class Store:
                     raise ValueError("Reconcile the submission first")
                 job.status, job.error = "rejected", "Skipped by user"
                 db.execute("INSERT OR IGNORE INTO manual_skips VALUES (?)", (id,))
+                db.execute('DELETE FROM checkpoints WHERE job_id=?', (id,))
             else:
                 raise ValueError("Unsupported action")
             job.updated_at = now()
             db.execute("UPDATE jobs SET status=?,data=? WHERE id=?", (job.status, job.model_dump_json(), id))
+            if checkpoint_update is not None:
+                db.execute('UPDATE checkpoints SET data=? WHERE job_id=?', (json.dumps(checkpoint_update[1]), id))
             return job
 
     def resumes(self) -> list[Resume]:
@@ -417,5 +449,5 @@ class Store:
 
     def clear(self):
         with self.connection() as db:
-            db.executescript("DELETE FROM application_holds; DELETE FROM evaluation_versions; DELETE FROM search_evaluations; DELETE FROM manual_skips; DELETE FROM job_keys; DELETE FROM jobs; DELETE FROM resumes; DELETE FROM events; DELETE FROM meta;")
+            db.executescript("DELETE FROM checkpoints; DELETE FROM application_holds; DELETE FROM evaluation_versions; DELETE FROM search_evaluations; DELETE FROM manual_skips; DELETE FROM job_keys; DELETE FROM jobs; DELETE FROM resumes; DELETE FROM events; DELETE FROM meta;")
             db.execute("UPDATE config SET data=? WHERE id=1", (Config().model_dump_json(),))

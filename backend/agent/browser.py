@@ -11,7 +11,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 import keyring
 from playwright.async_api import async_playwright, TimeoutError as BrowserTimeout, Error as BrowserError
 
-from .forms import fill_form, act, OperationPaused
+from .forms import fill_form, act, OperationPaused, form_signature
 from .model_gateway import narrative_answer
 from .models import ApplyResult, Job
 from .security import hostname, public_url
@@ -77,7 +77,7 @@ def metadata(text: str, search) -> dict:
 
 
 class BrowserAgent:
-    def __init__(self, runtime: Path, headless: bool = False):
+    def __init__(self, runtime: Path, headless: bool = False, store=None):
         self.runtime = runtime
         self.headless = headless
         self.pw = self.context = self.page = None
@@ -88,6 +88,7 @@ class BrowserAgent:
         self.credential_redirect = None
         self.credential_request_failed = False
         self.pending_application = None
+        self.checkpoint_store = store
         self.state = "not_open"
 
     async def ensure(self):
@@ -494,12 +495,16 @@ class BrowserAgent:
         if snapshot['token'] != token or not snapshot['fields']:
             raise ValueError('The browser answers changed or no completed answers can be confirmed. Review them again.')
         self.pending_application.approved = {item['key']: item['value'] for item in snapshot['fields']}
+        self.pending_application.confirmed[snapshot['step_signature']] = {item['semantic_key']:item['value'] for item in snapshot['fields']}
+        if self.checkpoint_store:
+            self.checkpoint_store.save_checkpoint(job.id, self.pending_application.checkpoint(job, config, resume))
         return snapshot
 
     async def apply(self, job, profile, resume, config, before_submit, can_act=lambda: True, dry_run: bool = False) -> ApplyResult:
         async with self.lock:
             await self.ensure()
             retained = self.pending_application
+            saved_checkpoint = self.checkpoint_store.checkpoint(job.id) if self.checkpoint_store else None
             continuing = retained is not None and await retained.valid(self.page, job, config, resume)
             if not continuing:
                 await self._reset_sensitive()
@@ -548,7 +553,7 @@ class BrowserAgent:
                 elif not continuing:
                     await adapter.enter(self.page.main_frame, self.sensitive_hosts, can_act)
                 pending_transfer = None
-                for _ in range(12):
+                for step_index in range(20):
                     await self.page.wait_for_timeout(600)
                     if pending_transfer is not None:
                         for proof in pending_transfer:
@@ -566,13 +571,20 @@ class BrowserAgent:
                         return ApplyResult(state='needs_input', reason='An existing confirmation is visible. Check this application outcome before continuing.', answers=answers, sources=sources)
                     if self.pending_application is None:
                         self.pending_application = await Continuation.create(self.page, job, config, resume)
+                        if self.pending_application.restore(saved_checkpoint, job, config, resume):
+                            answers.update(self.pending_application.answers)
+                            sources.update(self.pending_application.sources)
+                    signature = await form_signature(scope)
+                    self.pending_application.step = step_index
+                    self.pending_application.step_signature = signature
                     self.pending_application.attachments = [proof for proof in self.pending_application.attachments
                         if await attachments_valid([proof], resume, scope, self._download_resume)]
                     uploaded = bool(self.pending_application.attachments)
                     if not uploaded:
                         uploaded = await adapter.reuse_resume(scope, resume, lambda url: self._download_resume(url, frame), can_act, self.pending_application.attachments)
                     outcome = await fill_form(scope, profile, resume, job.country, lambda question: narrative_answer(question, job, profile, resume, config.settings), can_act,
-                        approved_prefilled=self.pending_application.approved, attachment_verified=uploaded)
+                        approved_prefilled=self.pending_application.approved, attachment_verified=uploaded,
+                        confirmed_fields=self.pending_application.confirmed.get(signature, {}))
                     answers.update(outcome.answers)
                     sources.update(outcome.sources)
                     new_uploads = await capture_uploads(scope, resume)
@@ -582,9 +594,12 @@ class BrowserAgent:
                     self.pending_application.answers = dict(answers)
                     self.pending_application.sources = dict(sources)
                     self.pending_application.uploaded = uploaded
+                    self.pending_application.field_details = outcome.field_details
+                    if self.checkpoint_store:
+                        self.checkpoint_store.save_checkpoint(job.id, self.pending_application.checkpoint(job, config, resume))
                     if outcome.missing:
-                        return ApplyResult(state="needs_input", reason="Required answers or fields need attention", questions=outcome.missing, answers=answers, sources=sources)
-                    submit = scope.get_by_role("button", name=re.compile(r"^(?:Submit(?: (?:your )?application)?|Send application)$", re.I)).first
+                        return ApplyResult(state="needs_input", reason="Required answers or fields need attention", questions=outcome.missing, field_details=outcome.field_details, answers=answers, sources=sources)
+                    submit = scope.get_by_role("button", name=getattr(adapter, 'submit_labels', re.compile(r"^(?:Submit(?: (?:your )?application)?|Send application)$", re.I))).first
                     if await submit.count() and await submit.is_visible():
                         if not uploaded:
                             return ApplyResult(state="needs_input", reason="The selected CV attachment has not been verified", answers=answers, sources=sources)
@@ -602,7 +617,7 @@ class BrowserAgent:
                                 return ApplyResult(state="submitted", reason="Visible application confirmation received", answers=answers, sources=sources)
                             await self.page.wait_for_timeout(700)
                         return ApplyResult(state="submission_uncertain", reason="Submit was attempted but confirmation was not observed. Reconcile before retry.", answers=answers, sources=sources)
-                    next_button = scope.get_by_role("button", name=re.compile(r"^(?:Next|Continue|Review|Review your application)$", re.I)).first
+                    next_button = scope.get_by_role("button", name=getattr(adapter, 'next_labels', re.compile(r"^(?:Next|Continue|Review|Review your application)$", re.I))).first
                     if not await next_button.count():
                         return ApplyResult(state="needs_input", reason="Unsupported application step", answers=answers, sources=sources)
                     # A form without an explicit Next control cannot be advanced
@@ -625,3 +640,5 @@ class BrowserAgent:
             finally:
                 if submission_started:
                     self.pending_application = None
+                    if self.checkpoint_store:
+                        self.checkpoint_store.clear_checkpoint(job.id)

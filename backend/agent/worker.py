@@ -222,6 +222,7 @@ class Worker:
                         fresh.status = "needs_input"
                         fresh.error += " (Attempt limit reached; inspect before queueing again.)"
                 fresh.questions, fresh.answers = result.questions, result.answers
+                fresh.field_details = result.field_details
                 fresh.answer_sources = result.sources
                 self.store.save_job(fresh)
                 if fresh.status == 'needs_input':

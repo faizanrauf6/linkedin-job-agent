@@ -5,13 +5,20 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from .adapters import verified_scopes
-from .forms import prefilled_candidates
+from .forms import prefilled_candidates, form_signature
+from .models import now
 
 
 def configuration_key(config):
     data = config.model_dump(mode='json', exclude={'revision'})
     data['settings'].pop('paused')
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+def checkpoint_binding(job, config, resume):
+    payload = [job.id, job.url if job.easy_apply else job.application_url,
+               configuration_key(config), resume.id, resume.sha256]
+    return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
 
 
 @dataclass
@@ -27,6 +34,24 @@ class Continuation:
     uploaded: bool = False
     approved: dict = field(default_factory=dict)
     attachments: list = field(default_factory=list)
+    confirmed: dict = field(default_factory=dict)
+    step: int = 0
+    step_signature: str = ''
+    field_details: list = field(default_factory=list)
+
+    def checkpoint(self, job, config, resume):
+        return {'version':1, 'binding':checkpoint_binding(job, config, resume),
+            'job_id':job.id, 'target':self.target, 'resume_id':self.resume_id, 'resume_hash':self.resume_hash,
+            'step':self.step, 'step_signature':self.step_signature, 'answers':self.answers,
+            'sources':self.sources, 'confirmed':self.confirmed, 'field_details':self.field_details, 'updated_at':now()}
+
+    def restore(self, saved, job, config, resume):
+        if saved and saved.get('version') == 1 and saved.get('binding') == checkpoint_binding(job, config, resume):
+            self.answers = dict(saved.get('answers', {}))
+            self.sources = dict(saved.get('sources', {}))
+            self.confirmed = dict(saved.get('confirmed', {}))
+            return True
+        return False
 
     @classmethod
     async def create(cls, page, job, config, resume):
@@ -55,7 +80,8 @@ class Continuation:
             raise ValueError('The retained application form is no longer available.')
         _, scope, _ = scopes[0]
         fields = await prefilled_candidates(scope, config.profile, resume, job.country)
+        signature = await form_signature(scope)
         payload = {'document': self.document, 'config': self.config_key,
-                   'resume': self.resume_hash, 'fields': fields}
+                   'resume': self.resume_hash, 'fields': fields, 'step_signature':signature}
         token = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-        return {'token': token, 'fields': fields}
+        return {'token': token, 'fields': fields, 'step_signature':signature}

@@ -68,12 +68,17 @@ class ContinuationApproval(Model):
     confirmation: bool = False
 
 
+class CheckpointApproval(Model):
+    confirmation: bool = False
+    answers: dict[str,str] = Field(default_factory=dict)
+
+
 def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
     runtime = (runtime or ROOT / ".runtime").resolve()
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     runtime.chmod(0o700)
     store = Store(runtime / "agent.db")
-    browser = BrowserAgent(runtime)
+    browser = BrowserAgent(runtime, store=store)
     worker = Worker(store, browser)
     pending_tasks = set()
     process_lock = FileLock(runtime / "agent.lock")
@@ -295,6 +300,7 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
                     can_act=lambda: store.config().revision == config.revision and store.config().settings.paused,
                     dry_run=True)
                 job.answers, job.answer_sources, job.questions = result.answers, result.sources, result.questions
+                job.field_details = result.field_details
                 job.error = result.reason
                 if result.state == 'blocked':
                     job.status = 'blocked'
@@ -341,6 +347,42 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
                 raise HTTPException(409, str(exc)) from exc
             finally:
                 worker.busy = False
+
+    @app.get('/api/jobs/{id}/checkpoint')
+    def get_checkpoint(id: str):
+        if not store.job(id):
+            raise HTTPException(404, 'Job not found')
+        return store.checkpoint(id)
+
+    @app.post('/api/jobs/{id}/continue')
+    async def continue_checkpoint(id: str, body: CheckpointApproval):
+        from .continuation import checkpoint_binding
+        job, config, resume = continuation_context(id)
+        generation = store.resume_generation()
+        saved = store.checkpoint(id)
+        if not body.confirmation:
+            raise HTTPException(409, 'Explicitly confirm your answers before continuing')
+        if not saved or saved.get('binding') != checkpoint_binding(job, config, resume):
+            raise HTTPException(409, 'The checkpoint is missing or stale. Prepare this application again.')
+        updated = json.loads(json.dumps(saved))
+        fields = {f['key']:f for f in saved.get('field_details',[])}
+        for key,value in body.answers.items():
+            detail = fields.get(key)
+            if (not detail or detail.get('personal_action') or detail['type'] in {'file','password'}
+                    or not value.strip() or len(value) > min(detail.get('max_length') or 10000,10000)
+                    or detail.get('options') and value not in detail['options']):
+                raise HTTPException(409, 'An answer does not match the recorded question or available options')
+        updated.setdefault('confirmed',{}).setdefault(saved['step_signature'],{}).update(body.answers)
+        async with worker.run_lock:
+            try:
+                result = store.job_action(id,'queue',expected=job,revision=config.revision,
+                    resume_generation=generation,checkpoint_update=(saved,updated))
+                # The durable checkpoint is authoritative for the next attempt.
+                browser.pending_application = None
+                store.event('Checkpoint answers confirmed; application queued for continuation',job_id=id)
+                return result
+            except ValueError as exc:
+                raise HTTPException(409,str(exc)) from exc
 
     @app.post('/api/jobs/{id}/continuation')
     async def confirm_continuation(id: str, body: ContinuationApproval):

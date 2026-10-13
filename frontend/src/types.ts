@@ -27,6 +27,7 @@ export interface Job {
   id:string;linkedin_id:string;title:string;company:string;description:string;url:string;application_url:string;
   country:string;city:string;location:string;workplace:string;status:string;score:number;reasons:string[];evidence:string[];
   resume_id:string;answers:Record<string,string>;answer_sources:Record<string,string>;questions:string[];error:string;created_at:string;
+  field_details:{key:string;label:string;type:string;required:boolean;options:string[];value:string;reason:string;personal_action?:boolean;max_length?:number|null}[];
   easy_apply:boolean;submission_started:boolean;possible_duplicate:string;
   adapter_name:string;adapter_version:string;retry_at:string;poster_name:string;poster_url:string;verified_poster:boolean;risk_flags:string[];
 }

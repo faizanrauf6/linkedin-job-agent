@@ -208,6 +208,7 @@ class Job(Model):
     answers: dict[str, str] = Field(default_factory=dict)
     answer_sources: dict[str, str] = Field(default_factory=dict)
     questions: list[str] = Field(default_factory=list)
+    field_details: list[dict] = Field(default_factory=list)
     error: str = ""
     attempts: int = 0
     submission_started: bool = False
@@ -241,6 +242,7 @@ class ApplyResult(Model):
     state: Literal["submitted", "needs_input", "failed", "submission_uncertain", "blocked"]
     reason: str = ""
     questions: list[str] = Field(default_factory=list)
+    field_details: list[dict] = Field(default_factory=list)
     answers: dict[str, str] = Field(default_factory=dict)
     sources: dict[str, str] = Field(default_factory=dict)
     retryable: bool = False
