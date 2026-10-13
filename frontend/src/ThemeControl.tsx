@@ -16,7 +16,7 @@ function applyTheme(theme:Theme,systemDark:boolean){
  const resolved=theme==='system'?(systemDark?'dark':'light'):theme;
  document.documentElement.dataset.theme=resolved;
  document.documentElement.style.colorScheme=resolved;
- document.querySelector('meta[name="theme-color"]')?.setAttribute('content',resolved==='dark'?'#111713':'#f7f8f5');
+ document.querySelector('meta[name="theme-color"]')?.setAttribute('content',resolved==='dark'?'#111623':'#faf9f6');
 }
 
 export function ThemeControl(){
