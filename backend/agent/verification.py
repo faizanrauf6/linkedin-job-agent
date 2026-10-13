@@ -24,22 +24,40 @@ CAREERS_LINK = re.compile(r"career|vacanc|jobs|join[ -]?(?:us|our)|open (?:roles
 def ats_tenant(url: str) -> tuple[str, str, str] | None:
     """Supported shared hosts establish no ownership without a company tenant."""
     adapter = adapter_for(url).name
-    if adapter not in {"greenhouse", "lever"}:
+    if adapter in {"generic", "linkedin"}:
         return None
     parsed = urlsplit(url)
     segments = [unquote(part) for part in parsed.path.split("/") if part]
-    if not segments or any(part in {".", ".."} or "/" in part or "\\" in part for part in segments):
+    if any(part in {".", ".."} or "/" in part or "\\" in part for part in segments):
         return None
-    if adapter == "greenhouse" and segments[0] == "embed":
-        tenants = parse_qs(parsed.query).get("for", [])
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if adapter == "greenhouse" and segments and segments[0] == "embed":
+        tenants = query.get("for", [])
         tenant = tenants[0] if len(tenants) == 1 else ""
+    elif adapter == "workday":
+        # Workday tenant host can carry distinct internal/external career sites;
+        # locale prefixes are presentation, while the site is an ownership bound.
+        if segments and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", segments[0]):
+            segments = segments[1:]
+        tenant = segments[0] if segments else ""
+    elif adapter == "taleo":
+        tenant = segments[1] if len(segments) >= 2 and segments[0] == "careersection" else ""
+    elif adapter == "icims":
+        tenant = hostname(url).split(".")[0] if segments and segments[0] == "jobs" else ""
+    elif adapter == "bamboohr":
+        tenant = hostname(url).split(".")[0] if segments and segments[0] == "careers" else ""
+    elif adapter == "successfactors":
+        tenants = query.get("company", [])
+        tenant = tenants[0] if segments == ["career"] and len(tenants) == 1 else ""
     else:
-        tenant = segments[0]
+        tenant = segments[0] if segments else ""
     if not re.fullmatch(r"[A-Za-z0-9_-]+", tenant) or tenant.casefold() in {"embed", "jobs", "api"}:
         return None
     # Keep region/hostname exact as well as the tenant; a shared host is never
     # sufficient to approve another company's listing.
-    return adapter, hostname(url), tenant.casefold()
+    # Existing Greenhouse/Lever normalization is kept for compatibility.
+    # New vendors are case-exact until an observed integration proves otherwise.
+    return adapter, hostname(url), tenant.casefold() if adapter in {"greenhouse", "lever"} else tenant
 
 
 def bounded_html(html: str) -> str:

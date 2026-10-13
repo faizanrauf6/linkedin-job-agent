@@ -16,6 +16,15 @@ class PortalAdapter:
     name: str
     selector: str
     version: str = "1"
+    next_labels: re.Pattern = re.compile(r'^(?:Next|Continue|Review|Review your application)$', re.I)
+    submit_labels: re.Pattern = re.compile(r'^(?:Submit(?: (?:your )?application)?|Send application)$', re.I)
+    entry_labels: re.Pattern = re.compile(r'^Apply(?: for this job| now)?$', re.I)
+    entry_button_labels: re.Pattern = re.compile(r'^Apply (?:for this job|now)$', re.I)
+
+    @property
+    def capability(self):
+        from .portal_capabilities import capability_registry
+        return next(entry for entry in capability_registry() if entry['name'] == self.name)
 
     async def scope(self, frame):
         candidates = frame.locator(self.selector)
@@ -24,8 +33,9 @@ class PortalAdapter:
             if await candidate.is_visible():
                 if await candidate.locator('input,textarea,select,[role="combobox"],[role="radio"]').count():
                     return candidate
-                actions = candidate.get_by_role('button', name=re.compile(r'^(?:Next|Continue|Review(?: your application)?|Submit(?: (?:your )?application)?|Send application)$', re.I))
-                if await actions.count() or await candidate.get_by_text(CONFIRMATION).count():
+                next_actions = candidate.get_by_role('button', name=self.next_labels)
+                submit_actions = candidate.get_by_role('button', name=self.submit_labels)
+                if await next_actions.count() or await submit_actions.count() or await candidate.get_by_text(CONFIRMATION).count():
                     return candidate
         return None
 
@@ -80,14 +90,19 @@ class PortalAdapter:
         # Do not click a submit-like control merely because it says Apply.
         if await self.scope(frame) is not None:
             return
-        entries = frame.get_by_role('link', name=re.compile(r'^Apply(?: for this job| now)?$', re.I))
+        entries = frame.get_by_role('link', name=self.entry_labels)
         for index in range(await entries.count()):
             entry = entries.nth(index)
             target = urljoin(frame.url, await entry.get_attribute('href') or '')
-            if await entry.is_visible() and hostname(target) in allowed_hosts and public_url(target, resolve=False):
+            # The evidence grant covers one tenant, never every company on a
+            # shared ATS hostname. Local import avoids the verification cycle.
+            from .verification import ats_tenant
+            tenant = ats_tenant(frame.url)
+            same_tenant = self.name in {'generic', 'linkedin'} or (tenant is not None and ats_tenant(target) == tenant)
+            if await entry.is_visible() and same_tenant and hostname(target) in allowed_hosts and public_url(target, resolve=False):
                 await act(can_act, lambda: frame.goto(target, wait_until='domcontentloaded', timeout=30000))
                 return
-        buttons = frame.get_by_role('button', name=re.compile(r'^Apply (?:for this job|now)$', re.I))
+        buttons = frame.get_by_role('button', name=self.entry_button_labels)
         for index in range(await buttons.count()):
             button = buttons.nth(index)
             if await button.is_visible():
@@ -103,6 +118,21 @@ LEVER = PortalAdapter('lever', 'form.application-form:visible,form:visible')
 LINKEDIN = PortalAdapter('linkedin', '[role="dialog"]:visible,.jobs-easy-apply-modal:visible')
 
 
+# Explicit application containers; a newsletter/login form on a recognized
+# domain must not become an application just because it contains an input.
+SEMANTIC_APPLICATION = 'form[aria-label="Application"]:visible,[role="form"][aria-label="Application"]:visible'
+SAVE_CONTINUE = re.compile(r'^(?:Next|Continue|Save and Continue|Review|Review your application)$', re.I)
+WORKDAY = PortalAdapter('workday', '[data-automation-id="applyFlowPage"]:visible,' + SEMANTIC_APPLICATION, next_labels=SAVE_CONTINUE)
+ICIMS = PortalAdapter('icims', '#iCIMS_ApplicationForm:visible,form#iCIMS_MainForm:visible,' + SEMANTIC_APPLICATION)
+TALEO = PortalAdapter('taleo', '#requisitionDescriptionInterface:visible,form[name="requisitionDescriptionInterface"]:visible,' + SEMANTIC_APPLICATION, next_labels=SAVE_CONTINUE,
+    entry_labels=re.compile(r'^Apply(?: Online| for this job| now)?$', re.I), entry_button_labels=re.compile(r'^Apply (?:Online|for this job|now)$', re.I))
+SMARTRECRUITERS = PortalAdapter('smartrecruiters', '[data-test="application-form"]:visible,form#application-form:visible,' + SEMANTIC_APPLICATION)
+ASHBY = PortalAdapter('ashby', '.ashby-application-form-container:visible,' + SEMANTIC_APPLICATION)
+BAMBOOHR = PortalAdapter('bamboohr', '#applicationForm:visible,form[data-testid="application-form"]:visible,' + SEMANTIC_APPLICATION)
+SUCCESSFACTORS = PortalAdapter('successfactors', '#jobApplication:visible,form[name="application"]:visible,' + SEMANTIC_APPLICATION, next_labels=SAVE_CONTINUE,
+    submit_labels=re.compile(r'^(?:Apply|Submit(?: (?:your )?application)?|Send application)$', re.I))
+
+
 def adapter_for(url: str, easy_apply: bool = False) -> PortalAdapter:
     if easy_apply:
         return LINKEDIN
@@ -111,6 +141,20 @@ def adapter_for(url: str, easy_apply: bool = False) -> PortalAdapter:
         return GREENHOUSE
     if host in {'jobs.lever.co', 'jobs.eu.lever.co'}:
         return LEVER
+    if re.fullmatch(r'[a-z0-9-]+\.(?:wd[0-9]+\.)?myworkdayjobs\.com', host):
+        return WORKDAY
+    if re.fullmatch(r'[a-z0-9-]+\.icims\.com', host):
+        return ICIMS
+    if re.fullmatch(r'[a-z0-9-]+\.taleo\.net', host):
+        return TALEO
+    if host in {'jobs.smartrecruiters.com', 'careers.smartrecruiters.com'}:
+        return SMARTRECRUITERS
+    if host == 'jobs.ashbyhq.com':
+        return ASHBY
+    if re.fullmatch(r'[a-z0-9-]+\.bamboohr\.com', host):
+        return BAMBOOHR
+    if re.fullmatch(r'career[0-9]*\.successfactors\.(?:com|eu)', host):
+        return SUCCESSFACTORS
     return GENERIC
 
 

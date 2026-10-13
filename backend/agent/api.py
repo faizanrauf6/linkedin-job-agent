@@ -223,6 +223,11 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
     def portals():
         return store.portals()
 
+    @app.get('/api/portals/capabilities')
+    def portal_capabilities():
+        from .portal_capabilities import capability_registry
+        return capability_registry()
+
     @app.post("/api/portals/{host}/resume")
     def resume_portal(host: str):
         from .models import Settings

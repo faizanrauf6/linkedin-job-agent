@@ -15,7 +15,7 @@ from .forms import fill_form, act, OperationPaused, form_signature
 from .model_gateway import narrative_answer
 from .models import ApplyResult, Job
 from .security import hostname, public_url
-from .verification import verify_destination, employer_risk_flags
+from .verification import verify_destination, employer_risk_flags, ats_tenant
 from .adapters import adapter_for, verified_scopes, CONFIRMATION
 from .discovery import discover_candidates, acknowledge_candidates
 from .continuation import Continuation
@@ -89,6 +89,7 @@ class BrowserAgent:
         self.credential_request_failed = False
         self.pending_application = None
         self.checkpoint_store = store
+        self.application_tenants = {}
         self.state = "not_open"
 
     async def ensure(self):
@@ -121,6 +122,9 @@ class BrowserAgent:
         if self.sensitive_hosts is not None and hostname(url) not in self.sensitive_hosts:
             await route.abort()
             return
+        if not self._tenant_allowed(url):
+            await route.abort()
+            return
         if self.credential_host is not None and (hostname(url) != self.credential_host or urlsplit(url).scheme != 'https'):
             await route.abort()
             return
@@ -131,7 +135,7 @@ class BrowserAgent:
             response = await route.fetch(max_redirects=0, timeout=20000)
             if response.status in {301, 302, 303, 307, 308}:
                 target = urljoin(url, response.headers.get("location", ""))
-                if not await asyncio.to_thread(public_url, target) or self.sensitive_hosts is not None and hostname(target) not in self.sensitive_hosts and not (self.credential_host and hostname(target) in self.credential_allowed_hosts):
+                if not await asyncio.to_thread(public_url, target) or not self._tenant_allowed(target) or self.sensitive_hosts is not None and hostname(target) not in self.sensitive_hosts and not (self.credential_host and hostname(target) in self.credential_allowed_hosts):
                     await route.abort()
                     return
                 if self.credential_host is not None and (hostname(target) != self.credential_host or urlsplit(target).scheme != 'https'):
@@ -169,6 +173,7 @@ class BrowserAgent:
 
     async def _reset_sensitive(self):
         self.pending_application = None
+        self.application_tenants = {}
         if self.sensitive_hosts is not None:
             # Destroy every retained sensitive document before opening the network
             # boundary for discovery or another portal.
@@ -180,6 +185,11 @@ class BrowserAgent:
             self.credential_host = None
             self.credential_allowed_hosts = set()
             self.credential_redirect = None
+
+    def _tenant_allowed(self, url):
+        tenant = ats_tenant(url)
+        expected = self.application_tenants.get(hostname(url))
+        return not tenant or not expected or tenant == expected
 
     async def close(self):
         async with self.lock:
@@ -514,6 +524,8 @@ class BrowserAgent:
             if verification.state != "eligible":
                 return ApplyResult(state="blocked", reason="Employer or destination evidence changed")
             self.sensitive_hosts = set(verification.allowed_hosts)
+            tenant = ats_tenant(job.application_url)
+            self.application_tenants = {hostname(job.application_url):tenant} if tenant else {}
             answers = dict(retained.answers) if continuing else {}
             sources = dict(retained.sources) if continuing else {}
             uploaded = False
@@ -563,6 +575,7 @@ class BrowserAgent:
                     if await self._challenge():
                         return ApplyResult(state="needs_input", reason="Verification required; finish it in the browser", answers=answers, sources=sources, portal_issue=True)
                     scopes = await verified_scopes(self.page, self.sensitive_hosts, job.easy_apply)
+                    scopes = [item for item in scopes if self._tenant_allowed(item[2].url)]
                     if not scopes:
                         return ApplyResult(state="needs_input", reason="No supported form found inside verified portal hosts", answers=answers, sources=sources)
                     adapter, scope, frame = scopes[0]
