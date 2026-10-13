@@ -209,6 +209,7 @@ class Worker:
                 result = await self.browser.apply(job, config.profile, resume, config, lambda: self.store.begin_submission(job.id, config.revision), can_act=lambda: self.store.can_act(job.id, config.revision))
                 fresh = self.store.job(job.id)
                 fresh.adapter_name, fresh.adapter_version = job.adapter_name, job.adapter_version
+                fresh.document_ids=job.document_ids
                 if fresh.submission_started and result.state != "submitted":
                     result = ApplyResult(state="submission_uncertain", reason=result.reason)
                 fresh.status, fresh.error = result.state, result.reason

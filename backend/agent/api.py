@@ -373,7 +373,7 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
         fields = {f['key']:f for f in saved.get('field_details',[])}
         for key,value in body.answers.items():
             detail = fields.get(key)
-            if (not detail or detail.get('personal_action') or detail['type'] in {'file','password'}
+            if (not detail or detail.get('personal_action') or detail.get('ambiguous') or detail['type'] in {'file','password'}
                     or not value.strip() or len(value) > min(detail.get('max_length') or 10000,10000)
                     or detail.get('options') and value not in detail['options']):
                 raise HTTPException(409, 'An answer does not match the recorded question or available options')
@@ -382,8 +382,10 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
             try:
                 result = store.job_action(id,'queue',expected=job,revision=config.revision,
                     resume_generation=generation,checkpoint_update=(saved,updated))
-                # The durable checkpoint is authoritative for the next attempt.
-                browser.pending_application = None
+                retained=browser.pending_application
+                if retained is not None and retained.job_id==id:
+                    retained.confirmed=updated['confirmed']
+                    retained.approved={}
                 store.event('Checkpoint answers confirmed; application queued for continuation',job_id=id)
                 return result
             except ValueError as exc:
@@ -497,7 +499,7 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
         if worker.busy or not store.config().settings.paused:
             raise HTTPException(409, "Pause the agent and wait for current work to finish first")
         await browser.close()
-        for directory in ("resumes", "browser"):
+        for directory in ("resumes", "documents", "browser"):
             shutil.rmtree(runtime / directory, ignore_errors=True)
         store.clear()
         return {"ok": True, "note": "OS keychain credentials are separate; remove them in the operating system credential manager."}
@@ -507,6 +509,8 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
         return {"ok": True, "version": "0.1.0"}
 
     frontend = ROOT / "frontend" / "dist"
+    from .document_api import register_document_routes
+    register_document_routes(app,store,worker,runtime)
     if frontend.exists():
         app.mount("/", StaticFiles(directory=frontend, html=True), name="dashboard")
     return app

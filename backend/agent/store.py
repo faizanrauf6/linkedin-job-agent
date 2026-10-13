@@ -449,5 +449,7 @@ class Store:
 
     def clear(self):
         with self.connection() as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").fetchone():
+                db.execute('DELETE FROM documents')
             db.executescript("DELETE FROM checkpoints; DELETE FROM application_holds; DELETE FROM evaluation_versions; DELETE FROM search_evaluations; DELETE FROM manual_skips; DELETE FROM job_keys; DELETE FROM jobs; DELETE FROM resumes; DELETE FROM events; DELETE FROM meta;")
             db.execute("UPDATE config SET data=? WHERE id=1", (Config().model_dump_json(),))

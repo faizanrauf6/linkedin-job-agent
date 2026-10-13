@@ -6,20 +6,20 @@ import json
 import re
 import html
 from pathlib import Path
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit, parse_qs
 
 import keyring
 from playwright.async_api import async_playwright, TimeoutError as BrowserTimeout, Error as BrowserError
 
 from .forms import fill_form, act, OperationPaused, form_signature
 from .model_gateway import narrative_answer
-from .models import ApplyResult, Job
+from .models import ApplyResult, Job, now
 from .security import hostname, public_url
 from .verification import verify_destination, employer_risk_flags, ats_tenant
 from .adapters import adapter_for, verified_scopes, CONFIRMATION
 from .discovery import discover_candidates, acknowledge_candidates
 from .continuation import Continuation
-from .attachments import attachments_valid, capture_uploads
+from .attachments import attachments_valid, capture_uploads, upload_matches
 from .evidence_browser import render_evidence
 from .registration import registration_form, register_account
 
@@ -122,7 +122,7 @@ class BrowserAgent:
         if self.sensitive_hosts is not None and hostname(url) not in self.sensitive_hosts:
             await route.abort()
             return
-        if not self._tenant_allowed(url):
+        if not self._tenant_allowed(url,route.request.is_navigation_request()):
             await route.abort()
             return
         if self.credential_host is not None and (hostname(url) != self.credential_host or urlsplit(url).scheme != 'https'):
@@ -135,7 +135,7 @@ class BrowserAgent:
             response = await route.fetch(max_redirects=0, timeout=20000)
             if response.status in {301, 302, 303, 307, 308}:
                 target = urljoin(url, response.headers.get("location", ""))
-                if not await asyncio.to_thread(public_url, target) or not self._tenant_allowed(target) or self.sensitive_hosts is not None and hostname(target) not in self.sensitive_hosts and not (self.credential_host and hostname(target) in self.credential_allowed_hosts):
+                if not await asyncio.to_thread(public_url, target) or not self._tenant_allowed(target,route.request.is_navigation_request()) or self.sensitive_hosts is not None and hostname(target) not in self.sensitive_hosts and not (self.credential_host and hostname(target) in self.credential_allowed_hosts):
                     await route.abort()
                     return
                 if self.credential_host is not None and (hostname(target) != self.credential_host or urlsplit(target).scheme != 'https'):
@@ -186,10 +186,15 @@ class BrowserAgent:
             self.credential_allowed_hosts = set()
             self.credential_redirect = None
 
-    def _tenant_allowed(self, url):
+    def _tenant_allowed(self, url, navigation=True):
         tenant = ats_tenant(url)
         expected = self.application_tenants.get(hostname(url))
-        return not tenant or not expected or tenant == expected
+        if not expected:return True
+        if isinstance(expected,tuple):expected=[expected]
+        if tenant:return tenant in expected
+        if re.search(r'%2f|%5c',url,re.I) or len(parse_qs(urlsplit(url).query).get('company',[]))>1:return False
+        credential_endpoint=self.credential_host==hostname(url) and re.search(r'/(?:login|signin|sign-in|auth|session)(?:/|$)',urlsplit(url).path,re.I)
+        return not navigation or bool(credential_endpoint)
 
     async def close(self):
         async with self.lock:
@@ -505,7 +510,7 @@ class BrowserAgent:
         if snapshot['token'] != token or not snapshot['fields']:
             raise ValueError('The browser answers changed or no completed answers can be confirmed. Review them again.')
         self.pending_application.approved = {item['key']: item['value'] for item in snapshot['fields']}
-        self.pending_application.confirmed[snapshot['step_signature']] = {item['semantic_key']:item['value'] for item in snapshot['fields']}
+        self.pending_application.confirmed[snapshot['step_signature']] = {item['semantic_key']:item['value'] for item in snapshot['fields'] if item.get('restorable',True)}
         if self.checkpoint_store:
             self.checkpoint_store.save_checkpoint(job.id, self.pending_application.checkpoint(job, config, resume))
         return snapshot
@@ -525,7 +530,8 @@ class BrowserAgent:
                 return ApplyResult(state="blocked", reason="Employer or destination evidence changed")
             self.sensitive_hosts = set(verification.allowed_hosts)
             tenant = ats_tenant(job.application_url)
-            self.application_tenants = {hostname(job.application_url):tenant} if tenant else {}
+            self.application_tenants = {host:list(values) for host,values in verification.allowed_tenants.items()}
+            if tenant:self.application_tenants.setdefault(hostname(job.application_url),[]).append(tenant)
             answers = dict(retained.answers) if continuing else {}
             sources = dict(retained.sources) if continuing else {}
             uploaded = False
@@ -565,6 +571,7 @@ class BrowserAgent:
                 elif not continuing:
                     await adapter.enter(self.page.main_frame, self.sensitive_hosts, can_act)
                 pending_transfer = None
+                pending_documents = None
                 for step_index in range(20):
                     await self.page.wait_for_timeout(600)
                     if pending_transfer is not None:
@@ -572,6 +579,10 @@ class BrowserAgent:
                             element = proof['element'] if proof['kind'] == 'upload' else proof['link']
                             proof['transferred'] = not await element.evaluate('el => el.isConnected')
                         pending_transfer = None
+                    if pending_documents is not None:
+                        for proof in pending_documents:
+                            proof['transferred']=not await proof['element'].evaluate('el=>el.isConnected')
+                        pending_documents=None
                     if await self._challenge():
                         return ApplyResult(state="needs_input", reason="Verification required; finish it in the browser", answers=answers, sources=sources, portal_issue=True)
                     scopes = await verified_scopes(self.page, self.sensitive_hosts, job.easy_apply)
@@ -597,9 +608,17 @@ class BrowserAgent:
                         uploaded = await adapter.reuse_resume(scope, resume, lambda url: self._download_resume(url, frame), can_act, self.pending_application.attachments)
                     outcome = await fill_form(scope, profile, resume, job.country, lambda question: narrative_answer(question, job, profile, resume, config.settings), can_act,
                         approved_prefilled=self.pending_application.approved, attachment_verified=uploaded,
-                        confirmed_fields=self.pending_application.confirmed.get(signature, {}))
+                        confirmed_fields=self.pending_application.confirmed.get(signature, {}),
+                        documents=self._documents())
                     answers.update(outcome.answers)
                     sources.update(outcome.sources)
+                    for proof in outcome.document_uploads:
+                        self.pending_application.additional_uploads=[p for p in self.pending_application.additional_uploads if p['label']!=proof['label']]+[proof]
+                    for proof in self.pending_application.additional_uploads:
+                        connected=await proof['element'].evaluate('el=>el.isConnected')
+                        if not (connected or proof.get('transferred')) or not await upload_matches(proof['element'],proof['document']):
+                            outcome.missing.append(proof['label']+' (additional attachment changed)')
+                    job.document_ids=list(dict.fromkeys(p['document'].id for p in self.pending_application.additional_uploads))
                     new_uploads = await capture_uploads(scope, resume)
                     if new_uploads:
                         self.pending_application.attachments = [proof for proof in self.pending_application.attachments if proof['kind'] != 'upload'] + new_uploads
@@ -611,13 +630,13 @@ class BrowserAgent:
                     if self.checkpoint_store:
                         self.checkpoint_store.save_checkpoint(job.id, self.pending_application.checkpoint(job, config, resume))
                     if outcome.missing:
-                        return ApplyResult(state="needs_input", reason="Required answers or fields need attention", questions=outcome.missing, field_details=outcome.field_details, answers=answers, sources=sources)
+                        return ApplyResult(state="needs_input", reason="Required answers or fields need attention", questions=outcome.missing, field_details=outcome.field_details, document_ids=job.document_ids, answers=answers, sources=sources)
                     submit = scope.get_by_role("button", name=getattr(adapter, 'submit_labels', re.compile(r"^(?:Submit(?: (?:your )?application)?|Send application)$", re.I))).first
                     if await submit.count() and await submit.is_visible():
                         if not uploaded:
                             return ApplyResult(state="needs_input", reason="The selected CV attachment has not been verified", answers=answers, sources=sources)
                         if dry_run:
-                            return ApplyResult(state="needs_input", reason="Application prepared and ready for review; no submission was attempted", answers=answers, sources=sources)
+                            return ApplyResult(state="needs_input", reason="Application prepared and ready for review; no submission was attempted", document_ids=job.document_ids, answers=answers, sources=sources)
                         prior_confirmations = await self.confirmations(frame)
                         if not await attachments_valid(self.pending_application.attachments, resume, scope, self._download_resume):
                             return ApplyResult(state='needs_input', reason='The selected CV attachment changed. Review the document before continuing.', answers=answers, sources=sources)
@@ -627,7 +646,8 @@ class BrowserAgent:
                         await submit.click()
                         for _ in range(15):
                             if await self.has_new_confirmation(prior_confirmations, frame):
-                                return ApplyResult(state="submitted", reason="Visible application confirmation received", answers=answers, sources=sources)
+                                return ApplyResult(state="submitted", reason="Visible application confirmation received", document_ids=job.document_ids, answers=answers, sources=sources,
+                                    receipt={'text':'Visible application confirmation received','url':frame.url,'observed_at':now()})
                             await self.page.wait_for_timeout(700)
                         return ApplyResult(state="submission_uncertain", reason="Submit was attempted but confirmation was not observed. Reconcile before retry.", answers=answers, sources=sources)
                     next_button = scope.get_by_role("button", name=getattr(adapter, 'next_labels', re.compile(r"^(?:Next|Continue|Review|Review your application)$", re.I))).first
@@ -642,6 +662,7 @@ class BrowserAgent:
                     # that observed agent transition actually removed them.
                     self.pending_application.attachments = transferred
                     pending_transfer = transferred
+                    pending_documents=list(self.pending_application.additional_uploads)
                 return ApplyResult(state="needs_input", reason="Application exceeded the supported step limit", answers=answers, sources=sources)
             except OperationPaused:
                 return ApplyResult(state="needs_input", reason="Agent paused or configuration changed", answers=answers, sources=sources)
@@ -655,3 +676,8 @@ class BrowserAgent:
                     self.pending_application = None
                     if self.checkpoint_store:
                         self.checkpoint_store.clear_checkpoint(job.id)
+
+    def _documents(self):
+        if not self.checkpoint_store:return []
+        from .document_library import DocumentLibrary
+        return DocumentLibrary(self.checkpoint_store,self.runtime).documents()

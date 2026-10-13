@@ -183,7 +183,7 @@ def scoped_hosts(settings: Settings, portal: str, allowed: list[str]) -> list[st
     return list(dict.fromkeys(allowed + [host for host in approved if public_url('https://' + host, resolve=False) and hostname('https://' + host) == host]))
 
 
-async def verified_application_hosts(target, company_host, settings, fetch, pages, evidence):
+async def verified_application_hosts(target, company_host, settings, fetch, pages, evidence, tenants=None):
     allowed = [company_host, hostname(target)]
     # An iframe receives applicant data only when its exact URL is embedded by
     # the employer's already-corroborated application page, and is a supported ATS.
@@ -197,6 +197,8 @@ async def verified_application_hosts(target, company_host, settings, fetch, page
         for url in public_links(target, Links(document).embeds):
             if ats_tenant(url) is not None:
                 allowed.append(hostname(url))
+                if tenants is not None:
+                    tenants.setdefault(hostname(url),[]).append(ats_tenant(url))
                 evidence.append('Employer application page embeds supported portal: ' + target + ' -> ' + url)
                 allowed = scoped_hosts(settings, hostname(url), allowed)
     return scoped_hosts(settings, hostname(target), allowed)
@@ -295,8 +297,9 @@ async def verify_destination(
                 for link in owned)
             if exact or official_path:
                 proof = evidence + chain + ["Exact application destination linked from employer website: " + base + " -> " + target]
-                allowed = await verified_application_hosts(target, company_host, settings, bounded_fetch, pages, proof)
-                return Verification(state="eligible", evidence=proof, allowed_hosts=allowed)
+                tenants={hostname(target):[ats_tenant(target)]} if ats_tenant(target) else {}
+                allowed = await verified_application_hosts(target, company_host, settings, bounded_fetch, pages, proof,tenants)
+                return Verification(state="eligible", evidence=proof, allowed_hosts=allowed,allowed_tenants=tenants)
         if depth >= MAX_EVIDENCE_DEPTH:
             continue
         careers = set(public_links(base, parsed.career_links))

@@ -38,6 +38,7 @@ class Continuation:
     step: int = 0
     step_signature: str = ''
     field_details: list = field(default_factory=list)
+    additional_uploads: list = field(default_factory=list)
 
     def checkpoint(self, job, config, resume):
         return {'version':1, 'binding':checkpoint_binding(job, config, resume),

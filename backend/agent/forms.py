@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
 import json
+from collections import Counter
 import re
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ class FormOutcome:
     sources: dict[str, str] = field(default_factory=dict)
     uploaded: bool = False
     field_details: list[dict] = field(default_factory=list)
+    document_uploads: list[dict] = field(default_factory=list)
 
 
 class OperationPaused(Exception):
@@ -56,14 +58,15 @@ FIELD_INFO = """el => {
  const label = (((el.type || el.getAttribute('role')) === 'radio' ? legend || group?.querySelector('label')?.innerText : null)
    || el.getAttribute('aria-label') || labelled || direct || legend || group?.querySelector('label')?.innerText
    || el.getAttribute('placeholder') || el.name || el.id || '').replace(/\\*/g,'').trim();
- return {label, type:el.type || el.getAttribute('role') || el.tagName.toLowerCase(), role:el.getAttribute('role'), name:el.name || fieldset?.id || legend || '',
+ const record=el.closest('[data-section],fieldset');
+ return {label, type:el.type || el.getAttribute('role') || el.tagName.toLowerCase(), role:el.getAttribute('role'), name:el.name || fieldset?.id || legend || '', context:record?.getAttribute('data-section') || record?.querySelector(':scope > legend')?.textContent || '',
  required:el.required || el.getAttribute('aria-required') === 'true' || /\\*/.test(direct || legend || ''),
- options:el.tagName === 'SELECT' ? [...el.options].map(o => o.textContent.trim()) : [],
+ options:el.tagName === 'SELECT' ? [...el.options].map(o => o.textContent.trim()) : el.getAttribute('role') === 'listbox' ? [...el.querySelectorAll('[role=option]')].map(o=>o.textContent.trim()) : [],
  disabled:el.disabled || el.getAttribute('aria-disabled') === 'true', autocomplete:el.autocomplete};
 }"""
 
 
-FIELDS = 'input:not([type=hidden]):not([type=submit]):not([type=button]),select,textarea,[role="combobox"]:not(input):not(select),[role="radio"]:not(input),[role="checkbox"]:not(input)'
+FIELDS = 'input:not([type=hidden]):not([type=submit]):not([type=button]),select,textarea,[role="combobox"]:not(input):not(select),[role="radio"]:not(input),[role="checkbox"]:not(input),[role="listbox"][aria-multiselectable=true]'
 PERSONAL_ACTION = re.compile(r'\bsignature\b|\bsign here\b|\bi (?:certify|attest|declare|agree)\b|\bassessment\b|\bcoding test\b', re.I)
 
 
@@ -104,8 +107,25 @@ async def form_signature(scope):
     return hashlib.sha256(json.dumps(values).encode()).hexdigest()
 
 
+async def semantic_counts(scope):
+    fields=scope.locator(FIELDS)
+    counts=Counter()
+    seen_radios=set()
+    for i in range(await fields.count()):
+        element=fields.nth(i)
+        info=await element.evaluate(FIELD_INFO)
+        semantic=await field_semantics(element,info)
+        if info['type']=='radio' and info['name']:
+            identity=(semantic,info['name'],info.get('context',''))
+            if identity in seen_radios:continue
+            seen_radios.add(identity)
+        counts[semantic]+=1
+    return counts
+
+
 async def missing_details(scope, questions):
     result, seen = [], set()
+    counts=await semantic_counts(scope)
     fields = scope.locator(FIELDS)
     for index in range(await fields.count()):
         element = fields.nth(index)
@@ -122,7 +142,7 @@ async def missing_details(scope, questions):
           return group ? [...group.querySelectorAll('input[type=radio],[role=radio]')].map(r=>r.getAttribute('aria-label') || [...(r.labels||[])].map(l=>l.innerText).join(' ') || r.innerText) : [];
         }''')
         constraints = await element.evaluate("el => ({min:el.getAttribute('min'),max:el.getAttribute('max'),pattern:el.getAttribute('pattern'),max_length:el.maxLength > 0 ? el.maxLength : null})")
-        result.append({'key':key, 'label':info['label'], 'type':info['type'], 'required':info['required'],
+        result.append({'key':key, 'label':info['label'], 'type':info['type'], 'required':info['required'], 'ambiguous':counts[key]>1,
             'options':options, 'value':await existing_value(element, info, scope) if info['type'] not in {'password','file'} else '',
             'reason':next(q for q in questions if q.startswith(info['label'])), 'personal_action':bool(PERSONAL_ACTION.search(question_key(info['label']))), **constraints})
     return result
@@ -140,7 +160,7 @@ async def existing_value(element, info, scope):
         return ''
     if kind == 'checkbox':
         return 'Yes' if await element.evaluate("el => el.checked || el.getAttribute('aria-checked') === 'true'") else 'No'
-    return await element.evaluate("el => el.tagName === 'SELECT' ? (el.value ? el.selectedOptions[0]?.textContent.trim() || '' : '') : (el.value ?? el.textContent ?? '').trim()")
+    return await element.evaluate("el => el.tagName === 'SELECT' ? [...el.selectedOptions].filter(o=>o.value).map(o=>o.textContent.trim()).join(', ') : el.getAttribute('role') === 'listbox' ? [...el.querySelectorAll('[role=option][aria-selected=true]')].map(o=>o.textContent.trim()).join(', ') : (el.value ?? el.textContent ?? '').trim()")
 
 
 async def prefilled_candidates(scope, profile, resume, country):
@@ -162,22 +182,34 @@ async def prefilled_candidates(scope, profile, resume, country):
         if key not in seen:
             result.append({'key': key, 'semantic_key': await field_semantics(element, info), 'label': info['label'], 'value': value})
             seen.add(key)
+    counts=await semantic_counts(scope)
+    for item in result:item['restorable']=counts[item['semantic_key']]==1
     return result
 
 
-async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", narrator=None, can_act=lambda: True, *, approved_prefilled=None, attachment_verified=False, confirmed_fields=None) -> FormOutcome:
+async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", narrator=None, can_act=lambda: True, *, approved_prefilled=None, attachment_verified=False, confirmed_fields=None, documents=None) -> FormOutcome:
     result = FormOutcome()
+    from .complex_forms import ensure_repeating_groups, record_context, contextual_answer
+    await ensure_repeating_groups(scope,profile,can_act)
     fields = scope.locator(FIELDS)
     # This root stays in the field's document, including when inside an iframe.
     document_scope = scope.locator("xpath=ancestor-or-self::*[last()]")
     radio_done = set()
-    for i in range(await fields.count()):
+    counts=await semantic_counts(scope)
+    field_count=await fields.count()
+    for i in range(200):
+        if i>=await fields.count():break
+        if field_count!=await fields.count():
+            counts=await semantic_counts(scope)
+            field_count=await fields.count()
         if not can_act():
             result.missing.append("Agent paused or configuration changed")
             break
         element = fields.nth(i)
         info = await element.evaluate(FIELD_INFO)
         label, kind = info["label"], info["type"]
+        context=await record_context(scope,element,profile)
+        answer_label=f'{context[0].title()} {context[1]+1} · {label}' if context is not None else label
         if info["disabled"] or (kind != "file" and not await element.is_visible()):
             continue
         if kind == "file":
@@ -195,16 +227,30 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
                     result.missing.append("CV upload could not be verified")
                 else:
                     result.uploaded = True
-            elif info["required"]:
-                result.missing.append(label or "Unsupported attachment")
+            else:
+                from .document_library import document_for_field,verified_document_path
+                document=document_for_field(label,documents or [])
+                if document is not None:
+                    from .attachments import upload_matches
+                    path=verified_document_path(document)
+                    mime='application/pdf' if document.filename.lower().endswith('.pdf') else 'text/plain' if document.filename.lower().endswith('.txt') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                    await act(can_act,lambda:element.set_input_files({'name':document.filename,'mimeType':mime,'buffer':path.read_bytes()}))
+                    handle=await element.element_handle()
+                    if await upload_matches(handle,document):
+                        result.document_uploads.append({'element':handle,'document':document,'label':answer_label})
+                        result.answers[answer_label]=document.filename
+                        result.sources[answer_label]='document:'+document.id+':'+document.sha256
+                    else:result.missing.append(label+' (document upload could not be verified)')
+                elif info['required']:result.missing.append(label or 'Unsupported attachment')
             continue
         if kind == "password":
             result.missing.append("Portal login required")
             continue
-        answer = resolve_answer(label, profile, resume, country)
+        answer = contextual_answer(context,label) if context is not None else resolve_answer(label, profile, resume, country)
         current = await existing_value(element, info, scope)
         key = await field_key(element, info)
-        confirmed = (confirmed_fields or {}).get(await field_semantics(element, info))
+        semantic_key=await field_semantics(element,info)
+        confirmed = (confirmed_fields or {}).get(semantic_key) if counts[semantic_key]==1 else None
         if answer is None and confirmed and not PERSONAL_ACTION.search(question_key(label)) and (not current or current == confirmed):
             answer = Answer(value=confirmed, source='user_confirmed_current_field')
         if answer is None and not PERSONAL_ACTION.search(question_key(label)) and current and (approved_prefilled or {}).get(key) == current:
@@ -230,9 +276,26 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
         value = answer.value
         try:
             if current and current.strip().casefold() == value.strip().casefold() and await element.evaluate('el => el.checkValidity ? el.checkValidity() : true'):
-                result.answers[label], result.sources[label] = current, answer.source
+                result.answers[answer_label], result.sources[answer_label] = current, answer.source
                 continue
-            if kind.startswith("select") or info["options"]:
+            if kind == 'select-multiple' or info['role'] == 'listbox':
+                values=list(dict.fromkeys(v.strip() for v in value.split(',') if v.strip()))
+                choices=[choose_option(v,info['options']) for v in values]
+                if not choices or None in choices:
+                    result.missing.append(label+' (no matching multiselect options)')
+                    continue
+                if kind == 'select-multiple':
+                    await act(can_act,lambda:element.select_option(label=choices))
+                else:
+                    options=element.get_by_role('option')
+                    for n,text in enumerate(await options.all_text_contents()):
+                        option=options.nth(n)
+                        if (await option.get_attribute('aria-selected')=='true') != (text.strip() in choices):
+                            await act(can_act,option.click)
+                if set((await existing_value(element,info,scope)).split(', ')) != set(choices):
+                    result.missing.append(label+' (multiselect could not be verified)')
+                    continue
+            elif kind.startswith("select") or info["options"]:
                 choice = choose_option(value, info["options"])
                 if choice is None:
                     result.missing.append(label + " (no matching option)")
@@ -296,13 +359,14 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
                 else:
                     await act(can_act, lambda: element.set_checked(checked))
             else:
+                if kind=='month' and re.fullmatch(r'\d{4}-\d{2}-\d{2}',value):value=value[:7]
                 await act(can_act, lambda: element.fill(value))
                 valid = await element.evaluate("el => el.checkValidity ? el.checkValidity() : true")
                 if not valid:
                     result.missing.append(label + " (answer does not satisfy field validation)")
                     continue
-            result.answers[label] = value
-            result.sources[label] = answer.source
+            result.answers[answer_label] = value
+            result.sources[answer_label] = answer.source
         except OperationPaused:
             result.missing.append("Agent paused or configuration changed")
             break

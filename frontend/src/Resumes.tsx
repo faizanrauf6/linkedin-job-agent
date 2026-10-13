@@ -1,6 +1,7 @@
 import {useRef,useState} from 'react';
 import {Check,ChevronDown,FileText,Trash2,UploadCloud} from 'lucide-react';
 import {api,json} from './api';
+import {Documents} from './Documents';
 import {Callout,Field,ListInput,Panel} from './components';
 import type {Resume,Run} from './types';
 
@@ -10,7 +11,7 @@ export default function Resumes({resumes,run,refresh}:{resumes:Resume[];run:Run;
  return <><div className="section-intro"><div><h2>A CV for every direction.</h2><p>Upload your variants. Orbit picks the closest fit for each description.</p></div><button className="button primary" onClick={()=>file.current?.click()}><UploadCloud size={17}/>Upload CV</button></div><input ref={file} className="hidden" type="file" accept=".pdf,.docx" multiple onChange={e=>upload(e.target.files)}/>
  <div className="upload-zone" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();upload(e.dataTransfer.files)}}><div className="upload-icon"><UploadCloud size={25}/></div><div><h3>Bring your experience along.</h3><p>Drop PDF or DOCX files here, or <button className="inline-link" onClick={()=>file.current?.click()}>browse files</button></p><small>Up to 10 MB per file · Text-based documents · Original files are preserved</small></div></div>
  <Callout>Review the extracted text and confirm each CV before it can be selected. Add role and technology tags to improve matching.</Callout>
- <div className="cv-grid">{resumes.map(r=><ResumeCard key={r.id+String(r.confirmed)+r.conflict_fingerprint} resume={r} run={run} refresh={refresh}/>)}</div></>;
+ <div className="cv-grid">{resumes.map(r=><ResumeCard key={r.id+String(r.confirmed)+r.conflict_fingerprint} resume={r} run={run} refresh={refresh}/>)}</div><Documents run={run}/></>;
 }
 
 function ResumeCard({resume,run,refresh}:{resume:Resume;run:Run;refresh:()=>Promise<void>}){

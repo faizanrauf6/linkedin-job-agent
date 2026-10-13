@@ -58,3 +58,21 @@ async def test_checkpoint_approval_is_invalid_when_step_options_change(browser_a
     await agent.page.goto('about:blank')
     result = await agent.apply(job, Profile(), cv, config, lambda: pytest.fail('stale step approval submitted'))
     assert result.state == 'needs_input'
+
+
+@pytest.mark.asyncio
+async def test_duplicate_question_identities_never_silently_merge_confirmed_answers(browser_agent,tmp_path):
+    agent=browser_agent
+    store=agent.checkpoint_store=Store(tmp_path/'checkpoints.db')
+    job,cv,config=store.add_job(opportunity()),resume_file(tmp_path),Config()
+    await route_html(agent,'<form><div><label>Preferred shift<input required></label></div><div><label>Preferred shift<input required></label></div><label>Resume<input type=file required></label><button>Submit application</button></form>')
+    await agent.apply(job,Profile(),cv,config,lambda:False)
+    inputs=agent.page.locator('input:not([type=file])')
+    await inputs.nth(0).fill('Day');await inputs.nth(1).fill('Night')
+    snapshot=await agent.get_continuation(job,config,cv)
+    await agent.confirm_continuation(job,config,cv,snapshot['token'])
+    agent.pending_application=None
+    await agent.page.goto('about:blank')
+    result=await agent.apply(job,Profile(),cv,config,lambda:pytest.fail('Merged duplicate answers submitted'))
+    assert result.state=='needs_input'
+    assert await inputs.nth(0).input_value()==''

@@ -10,7 +10,7 @@ bounded application worker; expose working dashboard controls and capability evi
 
 - [x] P0: Add checkpoint persistence, structured field details and restart-safe continuation; test browser loss, stale configuration/CV/options and uncertain outcomes.
 - [x] P1 portals: Integrate dedicated adapters, tenant guards and capabilities API/UI; verify complete supported journeys.
-- [ ] P1 complex forms: Add record-aware fields, bounded repeating groups, dates, multi-select/conditional fields and confirmed additional uploads.
+- [x] P1 complex forms: Add record-aware fields, bounded repeating groups, dates, multi-select/conditional fields and confirmed additional uploads.
 - [x] P1 profile: Integrate structured applicant records, validation, answer resolution and accessible profile editors.
 - [ ] P1 decisions: Persist and approve immutable payload snapshots; reject stale or changed submission payloads.
 - [ ] P2 matching: Add explicit requirement interpretation and explainable weighted ranking with occupation-neutral fixtures.

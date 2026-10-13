@@ -211,6 +211,7 @@ class Job(Model):
     answer_sources: dict[str, str] = Field(default_factory=dict)
     questions: list[str] = Field(default_factory=list)
     field_details: list[dict] = Field(default_factory=list)
+    document_ids: list[str] = Field(default_factory=list)
     error: str = ""
     attempts: int = 0
     submission_started: bool = False
@@ -245,6 +246,8 @@ class ApplyResult(Model):
     reason: str = ""
     questions: list[str] = Field(default_factory=list)
     field_details: list[dict] = Field(default_factory=list)
+    document_ids: list[str] = Field(default_factory=list)
+    receipt: dict = Field(default_factory=dict)
     answers: dict[str, str] = Field(default_factory=dict)
     sources: dict[str, str] = Field(default_factory=dict)
     retryable: bool = False
@@ -255,3 +258,4 @@ class Verification(Model):
     state: Literal["eligible", "blocked", "unresolved"]
     evidence: list[str] = Field(default_factory=list)
     allowed_hosts: list[str] = Field(default_factory=list)
+    allowed_tenants: dict[str,list[tuple[str,str,str]]] = Field(default_factory=dict)
