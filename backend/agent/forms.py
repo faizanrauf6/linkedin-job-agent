@@ -195,6 +195,9 @@ async def prefilled_candidates(scope, profile, resume, country):
 
 async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", narrator=None, can_act=lambda: True, *, approved_prefilled=None, attachment_verified=False, confirmed_fields=None, documents=None, saved_attachment_verified=False) -> FormOutcome:
     result = FormOutcome()
+    if not can_act():
+        result.missing.append('Agent paused or configuration changed')
+        return result
     from .complex_forms import ensure_repeating_groups, record_context, contextual_answer
     await ensure_repeating_groups(scope,profile,can_act)
     fields = scope.locator(FIELDS)
@@ -202,6 +205,7 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
     document_scope = scope.locator("xpath=ancestor-or-self::*[last()]")
     radio_done = set()
     counts=await semantic_counts(scope)
+    label_counts=Counter([(await fields.nth(i).evaluate(FIELD_INFO))['label'] for i in range(await fields.count())])
     field_count=await fields.count()
     processed=set()
     for _ in range(200):
@@ -217,13 +221,14 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
         if element is None:break
         if field_count!=await fields.count():
             counts=await semantic_counts(scope)
+            label_counts=Counter([(await fields.nth(i).evaluate(FIELD_INFO))['label'] for i in range(await fields.count())])
             field_count=await fields.count()
         if not can_act():
             result.missing.append("Agent paused or configuration changed")
             break
         label, kind = info["label"], info["type"]
         context=await record_context(scope,element,profile)
-        answer_label=f'{context[0].title()} {context[1]+1} · {label}' if context is not None else label
+        answer_label=f'{context[0].title()} {context[1]+1} · {label}' if context is not None else f'{label} (field {i+1})' if label_counts[label]>1 and kind!='radio' else label
         if info["disabled"] or (kind != "file" and not await element.is_visible()):
             continue
         if kind == "file":
@@ -411,7 +416,7 @@ async def fill_form(scope, profile: Profile, resume: Resume, country: str = "", 
             break
         except Exception:
             result.missing.append(label + " (unsupported field interaction)")
-    for i in range(await fields.count()):
+    for i in range(await fields.count() if can_act() else 0):
         element=fields.nth(i)
         info=await element.evaluate(FIELD_INFO)
         if info['required'] and not info['disabled'] and await element.is_visible() and info['type']!='file':

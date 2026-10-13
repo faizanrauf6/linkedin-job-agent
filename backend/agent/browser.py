@@ -253,12 +253,29 @@ class BrowserAgent:
                     texts.add((await element.text_content() or "").strip())
         return texts
 
-    async def has_new_confirmation(self, previous: set[str], frame=None) -> bool:
+    async def new_confirmation_receipt(self, previous: set[str], frame=None) -> dict | None:
         frames = self._confirmation_frames(frame)
         for candidate in frames:
             if await candidate.locator('form:visible input:invalid,form:visible select:invalid,form:visible textarea:invalid').count():
-                return False
-        return bool(await self.confirmations(frame) - previous)
+                return None
+        observed = {}
+        for candidate in frames:
+            matches = candidate.get_by_text(CONFIRMATION)
+            for index in range(await matches.count()):
+                element = matches.nth(index)
+                if await element.is_visible():
+                    text = (await element.text_content() or '').strip()
+                    if text not in previous:
+                        observed.setdefault(text, candidate.url)
+        if not observed:
+            return None
+        # A submitted iframe may have disappeared while its parent shows the
+        # confirmation. Keep evidence tied to the document actually observed.
+        first = sorted(observed)[0]
+        return {'text': '; '.join(sorted(observed))[:1000], 'url': observed[first], 'observed_at': now()}
+
+    async def has_new_confirmation(self, previous: set[str], frame=None) -> bool:
+        return bool(await self.new_confirmation_receipt(previous, frame))
 
     async def _challenge(self) -> bool:
         for frame in self._inspection_frames():
@@ -658,10 +675,10 @@ class BrowserAgent:
                         submission_started = True
                         await submit.click()
                         for _ in range(15):
-                            if await self.has_new_confirmation(prior_confirmations, frame):
-                                observed=await self.confirmations(frame)-prior_confirmations
+                            receipt = await self.new_confirmation_receipt(prior_confirmations, frame)
+                            if receipt is not None:
                                 return ApplyResult(state="submitted", reason="Visible application confirmation received", document_ids=job.document_ids, answers=answers, sources=sources,
-                                    receipt={'text':'; '.join(sorted(observed))[:1000] or 'Visible application confirmation received','url':frame.url,'observed_at':now()})
+                                    receipt=receipt)
                             await self.page.wait_for_timeout(700)
                         return ApplyResult(state="submission_uncertain", reason="Submit was attempted but confirmation was not observed. Reconcile before retry.", answers=answers, sources=sources)
                     next_button = scope.get_by_role("button", name=getattr(adapter, 'next_labels', re.compile(r"^(?:Next|Continue|Review|Review your application)$", re.I))).first

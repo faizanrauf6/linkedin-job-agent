@@ -246,9 +246,9 @@ def test_restore_validates_additive_schema_before_replacing_runtime(tmp_path):
 def test_restored_queued_application_requires_a_new_review_and_can_be_released(tmp_path):
     runtime = tmp_path / 'runtime'
     client, app, store, worker, browser, job = client_for(runtime, related=True)
-    job.status = 'queued'
-    job.approved_revision = store.config().revision
-    store.save_job(job)
+    initial_review = client.get('/api/jobs/'+job.id+'/review').json()
+    approved = client.post('/api/jobs/'+job.id+'/review', json={'token':initial_review['token'],'confirmation':True})
+    assert approved.status_code == 200 and approved.json()['approved']
     previous_version = store.job(job.id).updated_at
     backup = client.get('/api/maintenance/backup')
     restored = client.post('/api/maintenance/restore', data={'confirmation':'RESTORE BACKUP'}, files={'file':('backup.zip',backup.content)})

@@ -37,3 +37,5 @@ jobs:
           npm --prefix frontend run build
       - name: Run complete fixture suite
         run: python -m pytest
+      - name: Smoke test dashboard workflows
+        run: python scripts/smoke.py

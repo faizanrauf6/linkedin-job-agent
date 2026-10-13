@@ -15,11 +15,31 @@ bounded application worker; expose working dashboard controls and capability evi
 - [x] P1 decisions: Persist and approve immutable payload snapshots; reject stale or changed submission payloads.
 - [x] P2 matching: Add explicit requirement interpretation and explainable weighted ranking with occupation-neutral fixtures.
 - [x] P2 documents: Add grounded reviewed drafts, bounded narrative composition and optional CV tailoring.
-- [ ] P2 tracking: Add durable attempts/receipts, pipeline edits, exports and authorized read-only email evidence.
-- [ ] P2 maintenance: Integrate CI/pinned setup, sanitized diagnostics, adapter health and validated backup/restore controls.
-- [ ] Run full tests/build/smoke, review combined changes, resolve findings, publish and record exact results/limits.
+- [x] P2 tracking: Add durable attempts/receipts, pipeline edits, exports and authorized read-only email evidence.
+- [x] P2 maintenance: Integrate CI/pinned setup, sanitized diagnostics, adapter health and validated backup/restore controls.
+- [x] Run full tests/build/smoke, review combined changes, resolve findings, publish and record exact results/limits.
 
 Root owns shared integration files. Independent portal, structured-profile and
 maintenance modules may be developed concurrently but are published as ordered
 increments. Preserve current data, manual skips, held interventions and submission
 reservation semantics. No force push, live account actions or real email access.
+
+## Release verification — 2026-10-13
+
+- Complete offline Chromium/API/domain suite: **585 passed** (95.06 seconds).
+- Production dashboard: TypeScript and Vite build passed.
+- Expanded isolated dashboard smoke passed structured employment records, CV and
+  supporting-document confirmation, named searches, start/pause, mobile layout,
+  recovery/portal settings, backup download and default-disabled mailbox access.
+- Independent integration review produced fixes for restored queued applications,
+  arbitrary field names resembling paths, concurrent data deletion and receipt
+  locations after iframe submission. Targeted regression checks passed.
+- Runtime data, browser sessions, CV originals and credentials remain ignored by Git.
+- Each roadmap increment was published to the authorized repository main branch.
+
+These are offline fixture results, not live vendor certifications. No real
+application, account creation, mailbox connection or external message was made.
+IMAP supports explicit manual app-password sync of up to 20 recent messages;
+OAuth-only mailboxes require the manual EML fallback. Custom assessments,
+signatures, verification challenges and unsupported portal controls require input.
+See `docs/practical-product.md` and `docs/portal-support.md` for workflows and limits.

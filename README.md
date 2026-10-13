@@ -25,11 +25,16 @@ a trusted PyPI mirror for setup using `PIP_INDEX_URL`; no mirror is hardcoded.
 4. Open **LinkedIn** from Overview and sign in in the dedicated Chromium browser.
 5. Optionally add exact company names and official domains in **Settings** to help
    corroborate employer careers links. This does not bypass listing checks.
-6. Use **Search now** to inspect results while paused. Review mode queues nothing
-   for submission until you select **Queue application** on a job.
+6. Use **Search now** while paused. Prepare an opportunity, inspect its exact
+   application review snapshot, then approve it to queue in review mode.
 7. Choose review or automatic mode, save, and click **Start agent**. In automatic
    mode, eligible new matches are queued without per-job approval. Start explicitly
    enables processing queued applications in either mode.
+
+See the [practical product guide](docs/practical-product.md) for structured profiles,
+repeating forms, exact approval snapshots, written documents, tracking, opt-in email,
+and backup/restore. The [portal capability matrix](docs/portal-support.md) lists
+fixture-tested journeys and their limits.
 
 ## What is implemented
 
@@ -44,8 +49,20 @@ a trusted PyPI mirror for setup using `PIP_INDEX_URL`; no mirror is hardcoded.
 - Hard job filters and explainable CV ranking. Missing mandatory data does not
   silently qualify a job; CVs must be confirmed before selection.
 - LinkedIn browser search and Easy Apply flow, plus public employer HTML forms
-  such as Greenhouse and Lever. Adapters use supported semantic fields and
+  including Greenhouse, Lever, Workday, iCIMS, Taleo, SmartRecruiters, Ashby,
+  BambooHR and SuccessFactors. Adapters use supported semantic fields and
   step controls, not arbitrary model-generated browser scripts.
+- Structured employment, education, licenses, certifications, languages, salary
+  and availability; supported repeating records, conditional questions, dates,
+  multi-selects and confirmed supporting-document uploads.
+- Immutable approval snapshots bind the selected CV, answers, documents, settings
+  and employer evidence to the exact submission payload.
+- Grounded reviewed cover letters and optional CV drafts preserve original CVs;
+  narrative limits stop incomplete answers.
+- Durable attempts and observed receipts, separate recruiter stages, JSON/CSV
+  exports, authorized email imports and explicit read-only IMAP sync.
+- Private validated backup/restore, sanitized diagnostics, adapter measurements
+  and CI using pinned dependency installation.
 - Exact saved screening answers, typed profile answers, resume upload checks,
   and optional model-assisted selection of confirmed narrative evidence.
 - Editable, review-only and confirmation step detection; supported saved CV
@@ -95,7 +112,9 @@ then choose **Confirm answers & queue continuation** and start the agent. A reta
 queued application is processed before discovery can navigate away from it.
 Confirmation is specific to the application document, question, current value,
 settings and CV. Changing those invalidates it. Browser restarts and navigation
-can destroy the retained form; use **Prepare without submitting** to start it again.
+can destroy the retained form. Durable checkpoints preserve unambiguous confirmed
+answers for explicit continuation; navigation may replay prior portal steps. Changed
+settings, documents, or questions require a fresh review.
 Prepared applications and applications awaiting manual input remain held until
 you explicitly queue them. Saving settings does not silently resume them.
 
