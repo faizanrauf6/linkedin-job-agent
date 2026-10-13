@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import {api,json} from './api';
 import {PortalSupport} from './PortalSupport';
+import {Maintenance} from './Maintenance';
 import {Callout,Field,ListInput,mapText,Panel,parseMap,SaveButton,Toggle,formatTime} from './components';
 import type {Config,Run,Settings} from './types';
 
@@ -30,7 +31,7 @@ export function AdvancedSettings({config,save,run}:Props){
  <Field label="Additional sign-in and form hosts" help="One Portal hostname = Allowed hostname, Allowed hostname per line. Approve only services the employer actually uses." wide><textarea rows={4} value={sso} onChange={e=>setSso(e.target.value)} placeholder="careers.company.com = login.company.com"/></Field></div></Panel>
  <Panel title="Stay available"><Toggle label="Keep computer awake while the agent is running" checked={settings.prevent_sleep} onChange={v=>patch('prevent_sleep',v)} help="On macOS, prevents idle sleep while processing is enabled. It does not override closing the laptop or shutting down."/></Panel>
  <div className="form-footer"><span>Save portal and recovery preferences before testing.</span><SaveButton/></div></form>
- <OperationsControls config={config} run={run}/><PortalSupport/></>;
+ <OperationsControls config={config} run={run}/><PortalSupport/><Maintenance config={config} run={run}/></>;
 }
 
 function OperationsControls({config,run}:{config:Config;run:Run}){

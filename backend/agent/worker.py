@@ -196,6 +196,7 @@ class Worker:
             self.busy, self.message = True, "Applying to " + job.company
             attempt_id=None
             result=None
+            application_started=False
             try:
                 attempt_id=self.tracking.start_attempt(job)
                 resume = await self.evaluate(job, config)
@@ -211,6 +212,7 @@ class Worker:
                     self.store.save_job(job)
                     return
                 self.store.save_job(job)
+                application_started=True
                 result = await self.browser.apply(job, config.profile, resume, config, lambda: self.store.begin_submission(job.id, config.revision), can_act=lambda: self.store.can_act(job.id, config.revision))
                 fresh = self.store.job(job.id)
                 fresh.adapter_name, fresh.adapter_version = job.adapter_name, job.adapter_version
@@ -257,6 +259,10 @@ class Worker:
                                 outcome.status='submission_uncertain' if outcome.submission_started else 'failed'
                                 outcome.error='Attempt interrupted before an outcome was recorded'
                             self.tracking.finish_attempt(attempt_id,outcome,result)
+                            if application_started:
+                                from .maintenance import STATES, record_adapter_result
+                                state=outcome.status if outcome.status in STATES else "needs_input"
+                                record_adapter_result(self.store,outcome,state,outcome.last_error_class)
                 finally:
                     self.busy = False
 

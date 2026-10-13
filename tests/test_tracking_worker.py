@@ -20,3 +20,7 @@ async def test_worker_records_attempt_and_observed_receipt_in_durable_history(tm
     history=TrackingStore(store).history(job.id)
     assert history['attempts'][0]['state']=='submitted'
     assert history['receipts'][0]['reference']=='fixture-123'
+
+    from agent.maintenance import adapter_health
+    assert adapter_health(store)[0]['submitted']==1
+    assert adapter_health(store)[0]['attempts']==1
