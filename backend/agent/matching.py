@@ -1,6 +1,7 @@
 import re
 
 from .models import Job, MatchResult, Profile, Resume, ResumeChoice, Search
+from .requirements import assess_requirements, extract_requirements, resume_requirement_match
 
 ALIASES = {
     "react.js": "react", "reactjs": "react", "node.js": "node", "nodejs": "node",
@@ -34,6 +35,53 @@ def contains(text: str, phrase: str, aliases: dict[str, str] | None = None) -> b
     return bool(re.search(r"(?<!\w)" + re.escape(normalized(phrase, aliases)) + r"(?!\w)", normalized(text, aliases)))
 
 
+ROLE_ALIASES = {
+    "rn": "registered nurse", "lpn": "licensed practical nurse", "lvn": "licensed vocational nurse",
+    "cdl driver": "commercial driver", "truck driver": "commercial driver",
+    "commercial truck driver": "commercial driver",
+    "software developer": "software engineer",
+    "front-end developer": "frontend engineer", "front end developer": "frontend engineer",
+    "frontend developer": "frontend engineer", "front-end engineer": "frontend engineer",
+    "front end engineer": "frontend engineer",
+    "back-end developer": "backend engineer", "back end developer": "backend engineer",
+    "backend developer": "backend engineer", "back-end engineer": "backend engineer",
+    "back end engineer": "backend engineer",
+}
+LEVEL_WORDS = {"senior", "sr", "junior", "jr", "entry", "level", "mid", "intern", "internship", "lead", "principal", "staff", "director", "executive"}
+
+
+def normalized_role(title: str, aliases: dict[str, str] | None = None) -> str:
+    text = title.casefold().strip()
+    pattern = r"(?<!\w)(?:" + "|".join(re.escape(key) for key in sorted(ROLE_ALIASES, key=len, reverse=True)) + r")(?!\w)"
+    return normalized(re.sub(pattern, lambda match: ROLE_ALIASES[match[0]], text), aliases)
+
+
+def interpreted_seniority(title: str) -> str:
+    text = title.casefold().replace("-", " ")
+    for pattern, level in [
+        (r"\b(?:intern|internship)\b", "intern"),
+        (r"\b(?:junior|jr|entry level)\b", "junior"),
+        (r"\b(?:executive|chief|ceo|cto|cfo)\b", "executive"),
+        (r"\bdirector\b", "director"),
+        (r"\b(?:principal|staff|lead)\b", "lead"),
+        (r"\b(?:senior|sr)\b", "senior"),
+        (r"\b(?:mid level|intermediate)\b", "mid"),
+        (r"\bassociate\b", "associate"),
+    ]:
+        if re.search(pattern, text):
+            return level
+    return ""
+
+
+def role_fit(target: str, actual: str, aliases: dict[str, str] | None = None, *, check_seniority: bool = True) -> float:
+    target_level, actual_level = interpreted_seniority(target), interpreted_seniority(actual)
+    if check_seniority and target_level and actual_level and target_level != actual_level:
+        return 0.0
+    wanted = {token for token in re.findall(r"[\w+#]+", normalized_role(target, aliases)) if token not in LEVEL_WORDS}
+    available = set(re.findall(r"[\w+#]+", normalized_role(actual, aliases)))
+    return len(wanted & available) / max(1, len(wanted))
+
+
 def country_key(value: str) -> str:
     value = value.strip().casefold()
     return COUNTRIES.get(value, value)
@@ -61,12 +109,12 @@ def match_job(job: Job, search: Search, profile: Profile, aliases: dict[str, str
         reasons.append("Excluded company")
     if search.included_companies and not any(contains(job.company, c, aliases) for c in search.included_companies):
         reasons.append("Company is not in your included companies")
-    checks = [(search.countries, job.country, "country"), (search.cities, job.city, "city"), (search.workplaces, job.workplace, "work arrangement"), (search.seniorities, job.seniority, "seniority"), (search.employment_types, job.employment_type, "employment type")]
+    checks = [(search.countries, job.country, "country"), (search.cities, job.city, "city"), (search.workplaces, job.workplace, "work arrangement"), (search.seniorities, job.seniority or interpreted_seniority(job.title), "seniority"), (search.employment_types, job.employment_type, "employment type")]
     for allowed, actual, label in checks:
         if allowed:
             if not actual:
                 unknown.append(f"Missing {label}")
-            elif not any(country_key(v) == country_key(actual) for v in allowed):
+            elif not any((interpreted_seniority(v) or v.casefold()) == (interpreted_seniority(actual) or actual.casefold()) if label == "seniority" else country_key(v) == country_key(actual) for v in allowed):
                 reasons.append(f"{label.capitalize()} does not match: {actual}")
     for skill in search.required_skills:
         if not contains(text, skill, aliases):
@@ -95,7 +143,19 @@ def match_job(job: Job, search: Search, profile: Profile, aliases: dict[str, str
             reasons.append("Work authorization does not match")
     if search.sponsorship_required and job.sponsorship_available is not True:
         (unknown if job.sponsorship_available is None else reasons).append("Sponsorship is not confirmed")
-    title_fit = 1 if not search.titles else max((len(set(normalized(t, aliases).split()) & set(normalized(job.title, aliases).split())) / max(1, len(set(normalized(t, aliases).split()))) for t in search.titles), default=0)
+    job_level = interpreted_seniority(job.title) or interpreted_seniority(job.seniority)
+    target_levels = [interpreted_seniority(title) for title in search.titles]
+    if job_level and target_levels and all(target_levels) and job_level not in target_levels:
+        reasons.append(f"Seniority does not match target titles: {job_level}")
+    for assessment in assess_requirements(job.description, profile, aliases):
+        message = f"Mandatory requirement {assessment.status}: {assessment.requirement.evidence} — {assessment.reason}"
+        if assessment.status == "unmet":
+            reasons.append(message)
+        elif assessment.status == "unknown":
+            unknown.append(message)
+        else:
+            evidence.append(message)
+    title_fit = 1 if not search.titles else max((role_fit(title, job.title, aliases) for title in search.titles), default=0)
     preferred = search.preferred_skills or profile.skills
     skill_fit = 1 if not preferred else sum(contains(text, s, aliases) for s in preferred) / len(preferred)
     score = round(title_fit * 50 + skill_fit * 50)
@@ -109,20 +169,40 @@ def tokens(text: str, aliases: dict[str, str] | None = None) -> set[str]:
     return {t for t in re.findall(r"[\w+#]+", normalized(text, aliases)) if len(t) > 1 and t not in STOP}
 
 
-def select_resume(job: Job, resumes: list[Resume], minimum: int = 20, aliases: dict[str, str] | None = None) -> ResumeChoice | None:
-    required = tokens(job.description + " " + job.title, aliases)
+def select_resume(job: Job, resumes: list[Resume], minimum: int = 20, aliases: dict[str, str] | None = None, profile: Profile | None = None) -> ResumeChoice | None:
+    """Rank visible evidence with role fit first; priority only breaks score ties."""
+    required_terms = tokens(job.description + " " + job.title, aliases)
+    mandatory = extract_requirements(job.description)
     choices = []
     for resume in resumes:
-        content = tokens(" ".join([resume.text, *resume.skills, *resume.roles]), aliases)
-        overlap = required & content
-        score = round(100 * len(overlap) / max(1, min(len(required), len(content))))
-        choices.append((score, resume.priority, resume.id, resume, overlap))
+        text = " ".join([resume.text, *resume.skills, *resume.roles])
+        content = tokens(text, aliases)
+        overlap = required_terms & content
+        # Explicit CV role records take precedence over incidental role words in
+        # prose (for example selling software to nurses is not a nursing role).
+        candidate_roles = resume.roles or [resume.text]
+        title_fit = max((role_fit(job.title, role, aliases, check_seniority=bool(resume.roles)) for role in candidate_roles), default=0)
+        mandatory_matches = [item for item in mandatory if resume_requirement_match(item, text, aliases)]
+        mandatory_fit = len(mandatory_matches) / max(1, len(mandatory))
+        general_fit = len(overlap) / max(1, len(required_terms))
+        role_weight, general_weight = (50, 20) if mandatory else (65, 35)
+        score = round(role_weight * title_fit + (30 * mandatory_fit if mandatory else 0) + general_weight * general_fit)
+        reasons = [f"Role/title fit: {title_fit:.0%} ({role_weight * title_fit:.1f} points)"]
+        if mandatory:
+            reasons.append(f"Mandatory qualification terms: {len(mandatory_matches)}/{len(mandatory)} ({30 * mandatory_fit:.1f} points): " + "; ".join(item.name or "total experience" for item in mandatory_matches))
+        reasons.append(f"Job description overlap: {general_fit:.0%} ({general_weight * general_fit:.1f} points). Matching terms: " + ", ".join(sorted(overlap)))
+        choices.append((score, resume.priority, resume.id, resume, reasons))
     if not choices:
         return None
-    score, _, _, resume, overlap = max(choices, key=lambda x: x[:3])
+    score, _, _, resume, reasons = max(choices, key=lambda item: item[:3])
     if score < minimum:
         return None
-    return ResumeChoice(resume=resume, score=score, reasons=["Matching terms: " + ", ".join(sorted(overlap))])
+    if sum(candidate[0] == score for candidate in choices) > 1:
+        reasons.append(f"Equal relevance scores resolved by CV priority ({resume.priority}), then stable identifier")
+    if profile is not None and mandatory:
+        for item in assess_requirements(job.description, profile, aliases):
+            reasons.append(f"Profile mandatory check {item.status}: {item.requirement.evidence} — {item.reason}")
+    return ResumeChoice(resume=resume, score=score, reasons=reasons)
 
 
 

@@ -61,7 +61,7 @@ class Worker:
             job.status = "blocked" if verification.state == "blocked" else "needs_input"
             job.error = "; ".join(verification.evidence)
             return None
-        choice = select_resume(job, [r for r in self.store.resumes() if r.confirmed], config.settings.cv_min_score, aliases=config.settings.technology_aliases)
+        choice = select_resume(job, [r for r in self.store.resumes() if r.confirmed], config.settings.cv_min_score, aliases=config.settings.technology_aliases,profile=config.profile)
         if not choice:
             job.status, job.error = "needs_input", "No confirmed CV meets the selection threshold"
             return None
