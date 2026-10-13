@@ -511,6 +511,8 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
     frontend = ROOT / "frontend" / "dist"
     from .document_api import register_document_routes
     register_document_routes(app,store,worker,runtime)
+    from .approval_api import register_approval_api
+    browser.review_payload=register_approval_api(app,store,worker,runtime).payload_matches
     if frontend.exists():
         app.mount("/", StaticFiles(directory=frontend, html=True), name="dashboard")
     return app

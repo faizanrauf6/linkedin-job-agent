@@ -90,6 +90,7 @@ class BrowserAgent:
         self.pending_application = None
         self.checkpoint_store = store
         self.application_tenants = {}
+        self.review_payload = None
         self.state = "not_open"
 
     async def ensure(self):
@@ -637,6 +638,11 @@ class BrowserAgent:
                             return ApplyResult(state="needs_input", reason="The selected CV attachment has not been verified", answers=answers, sources=sources)
                         if dry_run:
                             return ApplyResult(state="needs_input", reason="Application prepared and ready for review; no submission was attempted", document_ids=job.document_ids, answers=answers, sources=sources)
+                        if config.settings.mode=='review' and self.review_payload is not None:
+                            documents=[proof['document'] for proof in self.pending_application.additional_uploads]
+                            if not self.review_payload(job,config,resume,answers,sources,documents):
+                                return ApplyResult(state='needs_input',reason='Review and approve the exact prepared application payload before submission.',
+                                    document_ids=job.document_ids,answers=answers,sources=sources)
                         prior_confirmations = await self.confirmations(frame)
                         if not await attachments_valid(self.pending_application.attachments, resume, scope, self._download_resume):
                             return ApplyResult(state='needs_input', reason='The selected CV attachment changed. Review the document before continuing.', answers=answers, sources=sources)
