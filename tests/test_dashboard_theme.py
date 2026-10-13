@@ -38,29 +38,33 @@ async def dashboard(tmp_path):
             await browser.close()
 
 
+def theme_button(page,theme):
+    return page.get_by_role('button',name=theme.capitalize()+' theme',exact=True)
+
+
 @pytest.mark.asyncio
 async def test_theme_selection_persists_and_system_follows_device_changes(dashboard):
     page,context=dashboard
-    selector=page.get_by_role('combobox',name='Color theme',exact=True)
-    await expect(selector).to_have_value('system',timeout=3000)
+    await expect(theme_button(page,'system')).to_have_attribute('aria-pressed','true',timeout=3000)
+    await expect(page.get_by_role('combobox',name='Color theme',exact=True)).to_have_count(0)
     await expect(page.locator('html')).to_have_attribute('data-theme','light')
-    await selector.select_option('dark')
+    await theme_button(page,'dark').click()
     await expect(page.locator('html')).to_have_attribute('data-theme','dark')
     await page.reload()
-    await expect(selector).to_have_value('dark')
+    await expect(theme_button(page,'dark')).to_have_attribute('aria-pressed','true')
     await page.emulate_media(color_scheme='light')
     await expect(page.locator('html')).to_have_attribute('data-theme','dark')
-    await selector.select_option('light')
+    await theme_button(page,'light').click()
     await page.emulate_media(color_scheme='dark')
     await expect(page.locator('html')).to_have_attribute('data-theme','light')
-    await selector.select_option('system')
+    await theme_button(page,'system').click()
     await expect(page.locator('html')).to_have_attribute('data-theme','dark')
     await page.emulate_media(color_scheme='light')
     await expect(page.locator('html')).to_have_attribute('data-theme','light')
     other=await context.new_page()
     await other.goto('http://orbit.test/')
-    await other.get_by_role('combobox',name='Color theme',exact=True).select_option('dark')
-    await expect(selector).to_have_value('dark')
+    await theme_button(other,'dark').click()
+    await expect(theme_button(page,'dark')).to_have_attribute('aria-pressed','true')
     await expect(page.locator('html')).to_have_attribute('data-theme','dark')
 
 
@@ -69,13 +73,13 @@ async def test_theme_survives_unavailable_storage_and_ignores_invalid_preference
     page,context=dashboard
     await page.evaluate("localStorage.setItem('orbit.theme','invalid-theme')")
     await page.reload()
-    selector=page.get_by_role('combobox',name='Color theme',exact=True)
-    await expect(selector).to_have_value('system',timeout=3000)
+    await expect(theme_button(page,'system')).to_have_attribute('aria-pressed','true',timeout=3000)
+    await expect(page.get_by_role('combobox',name='Color theme',exact=True)).to_have_count(0)
     await page.add_init_script("Object.defineProperty(window,'localStorage',{get(){throw new DOMException('Blocked','SecurityError')}})")
     errors=[]
     page.on('pageerror',lambda error:errors.append(str(error)))
     await page.reload()
-    await selector.select_option('dark')
+    await theme_button(page,'dark').click()
     await expect(page.locator('html')).to_have_attribute('data-theme','dark')
     assert not errors
 
@@ -83,7 +87,7 @@ async def test_theme_survives_unavailable_storage_and_ignores_invalid_preference
 @pytest.mark.asyncio
 async def test_dark_theme_covers_forms_tables_and_mobile_without_overflow(dashboard):
     page,context=dashboard
-    await page.get_by_role('combobox',name='Color theme',exact=True).select_option('dark',timeout=3000)
+    await theme_button(page,'dark').click(timeout=3000)
     art_background=await page.locator('.floating-card').first.evaluate('el=>getComputedStyle(el).backgroundColor')
     assert max(map(int,art_background[4:-1].split(','))) < 80
     await page.get_by_role('button',name='My profile',exact=True).click()
@@ -104,6 +108,8 @@ async def test_dark_theme_covers_forms_tables_and_mobile_without_overflow(dashbo
     await page.get_by_role('button',name='Close details').click()
     await page.set_viewport_size({'width':390,'height':844})
     assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')
-    await expect(page.get_by_role('combobox',name='Color theme',exact=True)).to_be_visible()
+    await expect(page.get_by_role('group',name='Color theme',exact=True)).to_be_visible()
+    for theme in ['light','dark','system']:
+        await expect(theme_button(page,theme)).to_be_visible()
     await page.set_viewport_size({'width':320,'height':700})
     assert await page.evaluate('document.documentElement.scrollWidth<=innerWidth')

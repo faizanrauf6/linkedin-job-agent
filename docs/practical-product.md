@@ -4,7 +4,7 @@ Orbit runs on your computer. Begin with the agent paused, and keep the computer
 awake while it is working. The dashboard is at `http://127.0.0.1:8765` after
 `./scripts/start.sh`.
 
-Use the **Color theme** selector in the header to choose Light, Dark, or System.
+Use the sun, moon, and monitor buttons in the header to choose Light, Dark, or System.
 System follows your device appearance; your choice is saved in this browser and
 shared across its open workspace tabs. If browser storage is blocked, the choice
 lasts for the current visit.

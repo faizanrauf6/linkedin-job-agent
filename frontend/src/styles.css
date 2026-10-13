@@ -35,12 +35,14 @@
 .button.primary:hover,.button.dark:hover{background:var(--accent-hover)}
 .button.primary,.button.dark{border-color:var(--green)}
 .button.secondary:hover,.nav-item:hover,.icon-button:hover{background:var(--sage)}
-.theme-control{display:flex;align-items:center;gap:6px;color:var(--muted);flex-shrink:0}
-.theme-control select{width:auto;min-height:37px;padding:8px 6px;font-size:11px;background:var(--surface);cursor:pointer}
-.theme-control svg{flex-shrink:0}
+.theme-control{display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--border);border-radius:7px;background:var(--surface);flex-shrink:0}
+.theme-control button{display:grid;place-items:center;width:30px;height:29px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--muted);cursor:pointer}
+.theme-control button:hover{background:var(--sage);color:var(--ink)}
+.theme-control button[aria-pressed="true"]{background:var(--green);color:var(--on-accent)}
+.theme-control button:focus-visible{position:relative;z-index:1}
 input::placeholder,textarea::placeholder{opacity:1}
-@media(max-width:640px){.theme-control{gap:4px}.theme-control select{max-width:82px;font-size:10px}.theme-control svg{display:none}}
-@media(max-width:380px){.top-actions .search-now{display:none}.topbar{gap:8px}}
+@media(max-width:640px){.theme-control button{width:27px;height:28px}}
+@media(max-width:380px){.top-actions .search-now,.breadcrumb strong{display:none}.topbar{gap:8px}}
 .floating-card{background:var(--surface)}
 .brand-mark i{border-color:var(--green)}
 button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline-color:var(--green)}

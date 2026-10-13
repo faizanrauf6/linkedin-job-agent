@@ -30,10 +30,9 @@ export function ThemeControl(){
   window.addEventListener('storage',sync);
   return()=>{media.removeEventListener('change',update);window.removeEventListener('storage',sync)};
  },[theme]);
- const Icon=theme==='system'?Monitor:theme==='dark'?Moon:Sun;
- return <label className="theme-control" title="Color theme"><Icon size={15} aria-hidden="true"/><select aria-label="Color theme" value={theme} onChange={event=>{
-  const value=event.target.value as Theme;
-  setTheme(value);
-  try{localStorage.setItem(STORAGE_KEY,value)}catch{/* Keep the current selection in memory. */}
- }}><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></label>;
+ const options=[{value:'light',label:'Light',icon:Sun},{value:'dark',label:'Dark',icon:Moon},{value:'system',label:'System',icon:Monitor}] as const;
+ return <div className="theme-control" role="group" aria-label="Color theme">{options.map(option=><button key={option.value} type="button" aria-label={option.label+' theme'} title={option.label+' theme'} aria-pressed={theme===option.value} onClick={()=>{
+  setTheme(option.value);
+  try{localStorage.setItem(STORAGE_KEY,option.value)}catch{/* Keep the current selection in memory. */}
+ }}><option.icon size={15} aria-hidden="true"/></button>)}</div>;
 }
