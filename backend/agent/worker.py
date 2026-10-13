@@ -12,6 +12,7 @@ from .models import ApplyResult, Job, now
 from .store import Store, within_hours
 from .forms import OperationPaused
 from .operations import SleepPrevention
+from .tracking import TrackingStore
 
 
 def transient_failure(exc: Exception) -> bool:
@@ -28,6 +29,7 @@ class Worker:
         self.message = "Paused"
         self.run_lock = asyncio.Lock()
         self.sleep_prevention = SleepPrevention()
+        self.tracking=TrackingStore(store)
 
     async def evaluate(self, job: Job, config):
         matches = []
@@ -192,7 +194,10 @@ class Worker:
             if not job:
                 return
             self.busy, self.message = True, "Applying to " + job.company
+            attempt_id=None
+            result=None
             try:
+                attempt_id=self.tracking.start_attempt(job)
                 resume = await self.evaluate(job, config)
                 self.store.save_job(job)
                 if resume is None:
@@ -243,7 +248,17 @@ class Worker:
                     self.store.hold_application(fresh.id)
                 self.store.event("Application interrupted", "warning", job.id)
             finally:
-                self.busy = False
+                try:
+                    if attempt_id:
+                        outcome=self.store.job(job.id)
+                        if outcome is not None:
+                            if outcome.status=='applying' and result is None:
+                                outcome=outcome.model_copy(deep=True)
+                                outcome.status='submission_uncertain' if outcome.submission_started else 'failed'
+                                outcome.error='Attempt interrupted before an outcome was recorded'
+                            self.tracking.finish_attempt(attempt_id,outcome,result)
+                finally:
+                    self.busy = False
 
     async def loop(self):
         while True:

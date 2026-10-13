@@ -58,3 +58,13 @@ def test_agent_starts_paused_and_local_data_can_be_cleared(client):
     assert client.get("/api/status").json()["paused"]
     assert client.request("DELETE", "/api/data", json={"confirmation": "DELETE LOCAL DATA"}).status_code == 200
     assert client.get("/api/resumes").json() == []
+
+
+def test_delete_local_data_refuses_an_operation_holding_the_worker_lock(client):
+    worker = client.app.state.worker
+    client.portal.call(worker.run_lock.acquire)
+    try:
+        response = client.request('DELETE','/api/data',json={'confirmation':'DELETE LOCAL DATA'})
+        assert response.status_code == 409
+    finally:
+        client.portal.call(worker.run_lock.release)

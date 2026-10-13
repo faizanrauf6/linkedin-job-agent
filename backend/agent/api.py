@@ -138,7 +138,8 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
                 size = request.headers.get("content-length")
                 if request.headers.get("content-type", "").startswith("multipart/") and size is None:
                     return JSONResponse({"detail": "Content-Length is required for uploads"}, status_code=411)
-                if size and (not size.isdigit() or int(size) > MAX_UPLOAD + 1024 * 1024):
+                limit = MAX_UPLOAD
+                if size and (not size.isdigit() or int(size) > limit + 1024 * 1024):
                     return JSONResponse({"detail": "Request exceeds upload limit"}, status_code=413)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -503,12 +504,15 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
     async def delete_data(body: DataDelete):
         if body.confirmation != "DELETE LOCAL DATA":
             raise HTTPException(400, "Type DELETE LOCAL DATA to confirm")
-        if worker.busy or not store.config().settings.paused:
+        if worker.busy or worker.run_lock.locked() or not store.config().settings.paused:
             raise HTTPException(409, "Pause the agent and wait for current work to finish first")
-        await browser.close()
-        for directory in ("resumes", "documents", "browser"):
-            shutil.rmtree(runtime / directory, ignore_errors=True)
-        store.clear()
+        async with worker.run_lock:
+            if worker.busy or not store.config().settings.paused:
+                raise HTTPException(409, "Pause the agent and wait for current work to finish first")
+            await browser.close()
+            for directory in ("resumes", "documents", "browser"):
+                shutil.rmtree(runtime / directory, ignore_errors=True)
+            store.clear()
         return {"ok": True, "note": "OS keychain credentials are separate; remove them in the operating system credential manager."}
 
     @app.get("/api/health")
@@ -522,6 +526,10 @@ def create_app(runtime: Path | None = None, run_worker: bool = True) -> FastAPI:
     browser.review_payload=register_approval_api(app,store,worker,runtime).payload_matches
     from .written_document_api import register_written_document_routes
     register_written_document_routes(app,store,worker,runtime)
+    from .tracking_api import register_tracking_routes
+    register_tracking_routes(app,store,worker,runtime)
+    from .email_api import register_email_routes
+    register_email_routes(app,store,worker,runtime)
     if frontend.exists():
         app.mount("/", StaticFiles(directory=frontend, html=True), name="dashboard")
     return app
